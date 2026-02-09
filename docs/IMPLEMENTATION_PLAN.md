@@ -176,6 +176,12 @@ Exit criteria:
 
 - protected endpoint returns 401 for invalid key and 200 for valid key
 
+Implementation notes:
+
+- Implement Hono middleware that validates `Authorization: Bearer <api_key>`, looks up the hashed key in SQLite, and attaches `userId/apiKeyId/apiKeyLabel` to the request context.
+- Update `last_used_at` on successful auth.
+- Add a simple `GET /v1/whoami` endpoint for manual verification during development.
+
 ### Milestone 5 - Proxy Request Creation (Always Prompts)
 
 - Implement `POST /v1/proxy/request`:

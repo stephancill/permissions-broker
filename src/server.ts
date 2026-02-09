@@ -3,6 +3,7 @@ import { migrate } from "./db/migrate";
 import { env } from "./env";
 
 import { accountRouter } from "./web/accounts";
+import { whoamiRouter } from "./web/whoami";
 
 if (env.NODE_ENV !== "test") {
   migrate();
@@ -23,6 +24,7 @@ app.get("/", (c) => c.text("ok"));
 app.get("/healthz", (c) => c.json({ ok: true }));
 
 app.route("/v1/accounts", accountRouter);
+app.route("/v1", whoamiRouter);
 
 Bun.serve({
   port: env.PORT,
