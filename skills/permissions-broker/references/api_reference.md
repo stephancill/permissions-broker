@@ -4,7 +4,7 @@ Keep this file as a quick reference for how an agent should call the broker.
 
 ## Broker API
 
-Base URL: the broker service URL `https://broker.steer.fun`.
+Base URL: the broker service URL `https://permissions-broker.steer.fun`.
 
 Auth
 
