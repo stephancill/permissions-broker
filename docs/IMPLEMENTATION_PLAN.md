@@ -227,6 +227,12 @@ Exit criteria:
 
 - approving and denying update DB state reliably
 
+Implementation notes:
+
+- Implement a URL recognizer that extracts a human summary + key parameters for common Docs/Drive read endpoints.
+- Always include raw host/path and raw query parameters (truncated) so unrecognized endpoints remain reviewable.
+- Keep callback_data small and opaque; the request id is the only identifier needed.
+
 ### Milestone 7 - Executor Loop + In-Memory Result Cache
 
 - Executor loop:

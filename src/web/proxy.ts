@@ -5,6 +5,7 @@ import { auditEvent } from "../audit/audit";
 import { requireApiKey } from "../auth/apiKey";
 import { db } from "../db/client";
 import { env } from "../env";
+import { interpretUpstreamUrl } from "../proxy/interpret";
 import { createProxyRequest } from "../proxy/requests";
 import { telegramApi } from "../telegram/api";
 
@@ -70,8 +71,12 @@ proxyRouter.post("/request", requireApiKey, async (c) => {
   if (created.isNew && u?.telegram_user_id && env.TELEGRAM_BOT_TOKEN) {
     const url = new URL(created.canonicalUpstreamUrl);
     const hashPrefix = created.requestHash.slice(0, 12);
+
+    const interpreted = interpretUpstreamUrl(url);
     const text = [
       `API key: ${auth.apiKeyLabel}`,
+      `Action: ${interpreted.summary}`,
+      ...interpreted.details.map((d) => `- ${d}`),
       `Request: GET ${url.hostname}${url.pathname}`,
       url.search ? `Query: ${truncate(url.search, 300)}` : "Query: (none)",
       consentHint
