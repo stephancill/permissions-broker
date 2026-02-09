@@ -24,6 +24,11 @@ if (env.NODE_ENV !== "test") {
   startExecutorLoop().catch((err) => {
     console.error("executor failed", err);
   });
+
+  const { startSweeperLoop } = await import("./proxy/sweeper");
+  startSweeperLoop().catch((err) => {
+    console.error("sweeper failed", err);
+  });
 }
 
 const app = new Hono();

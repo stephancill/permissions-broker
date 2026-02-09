@@ -285,6 +285,11 @@ Exit criteria:
 - approvals expire automatically
 - results expire automatically if not retrieved within cache TTL
 
+Implementation notes:
+
+- Periodically transition PENDING_APPROVAL requests past approval_expires_at to EXPIRED.
+- Mark AVAILABLE results as EXPIRED after the cache TTL window so polling returns a stable RESULT_EXPIRED error.
+
 ### Milestone 10 - Tests + Hardening
 
 - Unit tests:
