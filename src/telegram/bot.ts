@@ -92,6 +92,29 @@ async function createApiKey(params: {
   label: string;
   telegramUserId: number;
 }) {
+  const created = await createApiKeyRow({
+    userId: params.userId,
+    label: params.label,
+  });
+
+  auditEvent({
+    userId: params.userId,
+    actorType: "telegram",
+    actorId: String(params.telegramUserId),
+    eventType: "api_key_created",
+    event: { apiKeyId: created.id, label: params.label },
+  });
+
+  return created;
+}
+
+async function createApiKeyRow(params: {
+  userId: string;
+  label: string;
+}): Promise<{
+  id: string;
+  keyPlain: string;
+}> {
   const keyPlain = `pb_${randomBase64Url(32)}`;
   const keyHash = await sha256Hex(keyPlain);
   const id = ulid();
@@ -103,15 +126,13 @@ async function createApiKey(params: {
     )
     .run(id, params.userId, params.label, keyHash, now, now);
 
-  auditEvent({
-    userId: params.userId,
-    actorType: "telegram",
-    actorId: String(params.telegramUserId),
-    eventType: "api_key_created",
-    event: { apiKeyId: id, label: params.label },
-  });
-
   return { id, keyPlain };
+}
+
+function rotatedLabel(oldLabel: string, oldKeyId: string): string {
+  const day = nowIso().slice(0, 10);
+  const suffix = oldKeyId.slice(-6);
+  return `${oldLabel} (revoked ${day} ${suffix})`;
 }
 
 function normalizeLabel(label: string): string {
@@ -373,27 +394,61 @@ export function createBot(): Bot {
         await ctx.answerCallbackQuery({ text: "Cannot rotate a revoked key" });
         return;
       }
-      setPendingInput({
-        userId,
-        action: "ROTATE_KEY",
-        targetId: row.id,
-        ttlMs: 5 * 60_000,
-      });
-      await ctx.answerCallbackQuery({ text: "Send new label" });
-      await ctx.reply(`Send a label for the rotated key (old: ${row.label}).`, {
-        reply_markup: { force_reply: true },
-      });
+
+      await ctx.answerCallbackQuery({ text: "Rotating..." });
 
       try {
-        const prev =
-          ctx.callbackQuery.message && "text" in ctx.callbackQuery.message
-            ? ctx.callbackQuery.message.text
-            : "API keys:";
-        await ctx.editMessageText(
-          `${prev}\n\nStatus: awaiting rotate label...`
+        const now = nowIso();
+        const oldLabel = row.label;
+
+        // Free the label under the current unique(user_id, label) constraint by renaming the old key.
+        // This keeps the user-facing "label" stable for the new key while preserving history.
+        const freedLabel = rotatedLabel(oldLabel, row.id);
+
+        db().transaction(() => {
+          db()
+            .query(
+              "UPDATE api_keys SET revoked_at = ?, updated_at = ?, label = ? WHERE id = ? AND user_id = ? AND revoked_at IS NULL;"
+            )
+            .run(now, now, freedLabel, row.id, userId);
+        })();
+
+        const created = await createApiKeyRow({ userId, label: oldLabel });
+
+        auditEvent({
+          userId,
+          actorType: "telegram",
+          actorId: String(ctx.from.id),
+          eventType: "api_key_rotated",
+          event: {
+            oldApiKeyId: row.id,
+            newApiKeyId: created.id,
+            label: oldLabel,
+          },
+        });
+
+        await ctx.reply(
+          renderOneTimeKeyMessage({
+            label: oldLabel,
+            apiKey: created.keyPlain,
+          }),
+          {
+            parse_mode: "HTML",
+          }
         );
-      } catch {
-        // ignore
+
+        // Update the keys message so button state reflects the rotation.
+        try {
+          const rendered = renderKeysMessage(userId);
+          await ctx.editMessageText(rendered.text, {
+            reply_markup: rendered.keyboard,
+          });
+        } catch {
+          // ignore
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        await ctx.reply(`Failed to rotate key. ${msg}`);
       }
     }
   });
@@ -525,42 +580,7 @@ export function createBot(): Bot {
         return;
       }
 
-      if (pending.action === "ROTATE_KEY") {
-        const oldId = pending.target_id;
-        const now = nowIso();
-        db().transaction(() => {
-          db()
-            .query(
-              "UPDATE api_keys SET revoked_at = ?, updated_at = ? WHERE id = ? AND user_id = ? AND revoked_at IS NULL;"
-            )
-            .run(now, now, oldId, userId);
-        })();
-
-        const created = await createApiKey({
-          userId,
-          label,
-          telegramUserId: ctx.from.id,
-        });
-        clearPendingInput(userId);
-
-        auditEvent({
-          userId,
-          actorType: "telegram",
-          actorId: String(ctx.from.id),
-          eventType: "api_key_rotated",
-          event: {
-            oldApiKeyId: oldId,
-            newApiKeyId: created.id,
-            newLabel: label,
-          },
-        });
-
-        await ctx.reply(
-          renderOneTimeKeyMessage({ label, apiKey: created.keyPlain }),
-          { parse_mode: "HTML" }
-        );
-        return;
-      }
+      // Key rotation is handled immediately from the inline button and does not require extra user input.
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       await ctx.reply(`Failed: ${msg}`);
