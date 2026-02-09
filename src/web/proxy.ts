@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import { auditEvent } from "../audit/audit";
 import { requireApiKey } from "../auth/apiKey";
+import { consumeCachedResult } from "../cache/resultCache";
 import { db } from "../db/client";
 import { env } from "../env";
 import { interpretUpstreamUrl } from "../proxy/interpret";
@@ -21,6 +22,100 @@ function truncate(s: string, max: number): string {
 }
 
 export const proxyRouter = new Hono();
+
+proxyRouter.get("/requests/:id", requireApiKey, (c) => {
+  const auth = c.get("apiKeyAuth");
+  const requestId = c.req.param("id");
+
+  const row = db()
+    .query(
+      "SELECT id, status, approval_expires_at, result_state, error_code, error_message, upstream_http_status, upstream_content_type FROM proxy_requests WHERE id = ? AND user_id = ?;"
+    )
+    .get(requestId, auth.userId) as {
+    id: string;
+    status: string;
+    approval_expires_at: string;
+    result_state: string;
+    error_code: string | null;
+    error_message: string | null;
+    upstream_http_status: number | null;
+    upstream_content_type: string | null;
+  } | null;
+
+  if (!row) return c.json({ error: "not_found" }, 404);
+
+  if (
+    row.status === "PENDING_APPROVAL" ||
+    row.status === "APPROVED" ||
+    row.status === "EXECUTING"
+  ) {
+    c.header("Retry-After", "1");
+    return c.json(
+      {
+        request_id: row.id,
+        status: row.status,
+        approval_expires_at: row.approval_expires_at,
+      },
+      202
+    );
+  }
+
+  if (row.status === "DENIED") {
+    return c.json({ error: "denied", request_id: row.id }, 403);
+  }
+
+  if (row.status === "EXPIRED") {
+    return c.json({ error: "approval_expired", request_id: row.id }, 408);
+  }
+
+  if (row.status === "FAILED") {
+    return c.json(
+      {
+        error: "failed",
+        request_id: row.id,
+        error_code: row.error_code,
+        error_message: row.error_message,
+      },
+      502
+    );
+  }
+
+  if (row.status === "SUCCEEDED") {
+    const cached = consumeCachedResult(row.id);
+    if (cached) {
+      db()
+        .query(
+          "UPDATE proxy_requests SET result_state = 'CONSUMED', updated_at = ? WHERE id = ?;"
+        )
+        .run(new Date().toISOString(), row.id);
+
+      const headers = new Headers();
+      headers.set("X-Proxy-Request-Id", row.id);
+      if (cached.contentType) headers.set("Content-Type", cached.contentType);
+      const ab = cached.body.buffer.slice(
+        cached.body.byteOffset,
+        cached.body.byteOffset + cached.body.byteLength
+      );
+      return new Response(ab, { status: cached.status, headers });
+    }
+
+    if (row.result_state === "CONSUMED") {
+      return c.json({ error: "result_consumed", request_id: row.id }, 410);
+    }
+
+    if (row.result_state === "AVAILABLE") {
+      db()
+        .query(
+          "UPDATE proxy_requests SET result_state = 'EXPIRED', updated_at = ? WHERE id = ?;"
+        )
+        .run(new Date().toISOString(), row.id);
+    }
+
+    return c.json({ error: "result_expired", request_id: row.id }, 410);
+  }
+
+  return c.json({ error: "unknown_status", status: row.status }, 500);
+});
 
 proxyRouter.post("/request", requireApiKey, async (c) => {
   const auth = c.get("apiKeyAuth");

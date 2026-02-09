@@ -269,6 +269,12 @@ Exit criteria:
 
 - caller can poll and retrieve upstream response exactly once
 
+Implementation notes:
+
+- Return 202 for non-terminal states with a small status payload and a Retry-After hint.
+- On SUCCEEDED, return the cached upstream response bytes and consume the result immediately (subsequent requests return 410).
+- If the cache entry is missing (TTL elapsed or process restarted), return RESULT_EXPIRED and mark result_state=EXPIRED.
+
 ### Milestone 9 - Sweeper Loop
 
 - Expire pending approvals past `approval_expires_at` -> EXPIRED
