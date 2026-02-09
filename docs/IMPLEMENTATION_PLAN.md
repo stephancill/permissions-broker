@@ -116,6 +116,12 @@ Exit criteria:
 - bot restarts without reprocessing old updates
 - keys can be created and renamed with uniqueness enforced
 
+Implementation notes:
+
+- Use grammY for update parsing/handlers, but implement the getUpdates polling loop manually so we can persist last_update_id in SQLite.
+- Store simple "pending input" state in SQLite for label capture (create/rename/rotate) so interactive flows survive process restarts.
+- Bind caller identity to the API key label (user-controlled) and never accept caller labels from request payloads.
+
 ### Milestone 3 - Generic OAuth Framework (Provider Registry)
 
 Goal: a provider-agnostic OAuth module with a thin provider config, so adding providers later is mostly configuration plus minor adapter code.

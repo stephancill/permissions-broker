@@ -1,5 +1,19 @@
 import { Hono } from "hono";
+import { migrate } from "./db/migrate";
 import { env } from "./env";
+
+if (env.NODE_ENV !== "test") {
+  migrate();
+}
+
+if (env.TELEGRAM_BOT_TOKEN) {
+  const { createBot } = await import("./telegram/bot");
+  const { startTelegramPoller } = await import("./telegram/poller");
+  const bot = createBot();
+  startTelegramPoller(bot).catch((err) => {
+    console.error("telegram poller failed", err);
+  });
+}
 
 const app = new Hono();
 

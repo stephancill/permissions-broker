@@ -9,12 +9,14 @@ function nowIso(): string {
 
 function ensureSchemaMigrations(db: ReturnType<typeof openDb>) {
   db.exec(
-    "CREATE TABLE IF NOT EXISTS schema_migrations (id TEXT PRIMARY KEY, applied_at TEXT NOT NULL);",
+    "CREATE TABLE IF NOT EXISTS schema_migrations (id TEXT PRIMARY KEY, applied_at TEXT NOT NULL);"
   );
 }
 
 function getApplied(db: ReturnType<typeof openDb>): Set<string> {
-  const rows = db.query("SELECT id FROM schema_migrations ORDER BY id;").all() as {
+  const rows = db
+    .query("SELECT id FROM schema_migrations ORDER BY id;")
+    .all() as {
     id: string;
   }[];
   return new Set(rows.map((r) => r.id));
@@ -38,10 +40,9 @@ export function migrate(): void {
 
     db.transaction(() => {
       db.exec(sql);
-      db.query("INSERT INTO schema_migrations (id, applied_at) VALUES (?, ?);").run(
-        file,
-        nowIso(),
-      );
+      db.query(
+        "INSERT INTO schema_migrations (id, applied_at) VALUES (?, ?);"
+      ).run(file, nowIso());
     })();
   }
 }

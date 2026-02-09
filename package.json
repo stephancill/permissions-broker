@@ -13,7 +13,9 @@
     "format": "biome format --write ."
   },
   "dependencies": {
+    "grammy": "^1.39.3",
     "hono": "^4.11.9",
+    "ulid": "^3.0.2",
     "zod": "^4.3.6"
   },
   "devDependencies": {
