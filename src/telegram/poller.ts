@@ -3,6 +3,9 @@ import type { Bot } from "grammy";
 import { db } from "../db/client";
 
 export async function startTelegramPoller(bot: Bot): Promise<void> {
+  // grammY requires initialization (fetches bot info via getMe) before handleUpdate.
+  await bot.init();
+
   let lastUpdateId = (
     db()
       .query("SELECT last_update_id FROM telegram_state WHERE id = 1;")
