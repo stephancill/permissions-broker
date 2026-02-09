@@ -91,6 +91,12 @@ Exit criteria:
 - fresh DB can be migrated end-to-end
 - migrations are idempotent (do not reapply)
 
+Implementation notes:
+
+- Added a minimal SQL migration system backed by a schema_migrations table.
+- Created the initial schema migration covering users, API keys, linked accounts, OAuth state, requests, approvals, audit events, and Telegram cursor.
+- Added a `bun run migrate` script to apply migrations to the configured SQLite file.
+
 ### Milestone 2 - Telegram Bot (Long Poll) + Key Management
 
 - Stand up grammY bot long polling
