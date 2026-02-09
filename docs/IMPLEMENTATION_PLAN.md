@@ -200,6 +200,12 @@ Exit criteria:
 
 - request row created correctly, idempotency works
 
+Implementation notes:
+
+- Validate and canonicalize the upstream URL (https only, allowed hosts only) before storing.
+- Compute a stable request hash from the canonical request so the approval prompt can reference it.
+- Always create a Telegram approval prompt on request creation; bind the prompt identity to the API key label snapshot.
+
 ### Milestone 6 - Approval UI (Interpretability + Raw)
 
 - Build a URL recognizer for nicer summaries:

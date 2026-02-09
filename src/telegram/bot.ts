@@ -11,6 +11,7 @@ import { buildAuthorizationUrl } from "../oauth/flow";
 import type { OAuthProviderConfig } from "../oauth/provider";
 import { getProvider } from "../oauth/registry";
 import { createOauthState } from "../oauth/state";
+import { decideProxyRequest } from "../proxy/requests";
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -321,6 +322,49 @@ export function createBot(): Bot {
         reply_markup: { force_reply: true },
       });
     }
+  });
+
+  bot.callbackQuery(/r:(approve|deny):(.+)/, async (ctx) => {
+    if (!ctx.from) return;
+    const action = ctx.match?.[1];
+    const requestId = ctx.match?.[2];
+    const userId = ensureUser(ctx.from.id);
+
+    const msg = ctx.callbackQuery.message;
+    if (!msg || !("message_id" in msg)) {
+      await ctx.answerCallbackQuery({ text: "Missing message" });
+      return;
+    }
+
+    const decision = action === "approve" ? "approved" : "denied";
+    const telegramChatId = "chat" in msg ? msg.chat.id : ctx.from.id;
+    const res = decideProxyRequest({
+      requestId,
+      userId,
+      decision,
+      telegramUserId: ctx.from.id,
+      telegramChatId,
+      telegramMessageId: msg.message_id,
+    });
+
+    if (!res.ok) {
+      await ctx.answerCallbackQuery({ text: res.reason });
+      return;
+    }
+
+    auditEvent({
+      userId,
+      requestId,
+      actorType: "telegram",
+      actorId: String(ctx.from.id),
+      eventType:
+        decision === "approved"
+          ? "proxy_request_approved"
+          : "proxy_request_denied",
+      event: {},
+    });
+
+    await ctx.answerCallbackQuery({ text: decision });
   });
 
   bot.on("message:text", async (ctx) => {
