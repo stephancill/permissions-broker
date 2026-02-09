@@ -19,6 +19,13 @@ if (env.TELEGRAM_BOT_TOKEN) {
   });
 }
 
+if (env.NODE_ENV !== "test") {
+  const { startExecutorLoop } = await import("./proxy/executor");
+  startExecutorLoop().catch((err) => {
+    console.error("executor failed", err);
+  });
+}
+
 const app = new Hono();
 
 app.get("/", (c) => c.text("ok"));

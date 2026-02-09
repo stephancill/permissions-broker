@@ -251,6 +251,12 @@ Exit criteria:
 
 - an approved request reaches terminal status and caches a result
 
+Implementation notes:
+
+- Claim work by transitioning APPROVED -> EXECUTING in SQLite to avoid duplicate execution.
+- Fetch an access token using the stored refresh token, then execute the upstream GET with an injected Authorization header.
+- Store upstream response bytes in a short-lived in-memory cache keyed by request_id and mark result_state=AVAILABLE.
+
 ### Milestone 8 - Polling/Retrieval Endpoint
 
 - Implement `GET /v1/proxy/requests/:id`:
