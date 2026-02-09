@@ -118,6 +118,75 @@ function normalizeLabel(label: string): string {
   return label.trim().replace(/\s+/g, " ");
 }
 
+function renderKeysMessage(userId: string): {
+  text: string;
+  keyboard: InlineKeyboard;
+} {
+  const rows = db()
+    .query(
+      "SELECT id, label, created_at, revoked_at, last_used_at FROM api_keys WHERE user_id = ? ORDER BY created_at DESC;"
+    )
+    .all(userId) as {
+    id: string;
+    label: string;
+    created_at: string;
+    revoked_at: string | null;
+    last_used_at: string | null;
+  }[];
+
+  if (rows.length === 0) {
+    return {
+      text: "No API keys yet. Use /key to create one.",
+      keyboard: new InlineKeyboard(),
+    };
+  }
+
+  const kb = new InlineKeyboard();
+  for (const k of rows.slice(0, 10)) {
+    kb.text(`Rename: ${k.label}`, `k:rename:${k.id}`).row();
+    if (!k.revoked_at) {
+      kb.text(`Revoke: ${k.label}`, `k:revoke:${k.id}`).row();
+      kb.text(`Rotate: ${k.label}`, `k:rotate:${k.id}`).row();
+    }
+  }
+
+  const lines = rows.map((k) => {
+    const status = k.revoked_at ? "revoked" : "active";
+    return `- ${k.label} (${status}) created=${k.created_at} last_used=${k.last_used_at ?? "never"}`;
+  });
+
+  return {
+    text: `API keys:\n${lines.join("\n")}`,
+    keyboard: kb,
+  };
+}
+
+function renderApprovalDecisionText(params: {
+  originalText: string;
+  decision: "approved" | "denied";
+}): string {
+  const label = params.decision === "approved" ? "APPROVED" : "DENIED";
+  return `${params.originalText}\n\nDecision: ${label} (${nowIso()})`;
+}
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function renderOneTimeKeyMessage(params: {
+  label: string;
+  apiKey: string;
+}): string {
+  const label = escapeHtml(params.label);
+  const apiKey = escapeHtml(params.apiKey);
+  const keyBlock = `<span class="tg-spoiler"><code>${apiKey}</code></span>`;
+  return `API key (sent once)\n\nLabel: ${label}\nKey: ${keyBlock}`;
+}
+
 export function createBot(): Bot {
   if (!env.TELEGRAM_BOT_TOKEN) {
     throw new Error("TELEGRAM_BOT_TOKEN is required to start the Telegram bot");
@@ -202,7 +271,10 @@ export function createBot(): Bot {
         telegramUserId: ctx.from.id,
       });
       await ctx.reply(
-        `API key created (shown once).\n\nLabel: ${label}\nKey: ${created.keyPlain}`
+        renderOneTimeKeyMessage({ label, apiKey: created.keyPlain }),
+        {
+          parse_mode: "HTML",
+        }
       );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -214,38 +286,8 @@ export function createBot(): Bot {
     if (!ctx.from) return;
     const userId = ensureUser(ctx.from.id);
 
-    const rows = db()
-      .query(
-        "SELECT id, label, created_at, revoked_at, last_used_at FROM api_keys WHERE user_id = ? ORDER BY created_at DESC;"
-      )
-      .all(userId) as {
-      id: string;
-      label: string;
-      created_at: string;
-      revoked_at: string | null;
-      last_used_at: string | null;
-    }[];
-
-    if (rows.length === 0) {
-      await ctx.reply("No API keys yet. Use /key to create one.");
-      return;
-    }
-
-    const kb = new InlineKeyboard();
-    for (const k of rows.slice(0, 10)) {
-      kb.text(`Rename: ${k.label}`, `k:rename:${k.id}`).row();
-      if (!k.revoked_at) {
-        kb.text(`Revoke: ${k.label}`, `k:revoke:${k.id}`).row();
-        kb.text(`Rotate: ${k.label}`, `k:rotate:${k.id}`).row();
-      }
-    }
-
-    const lines = rows.map((k) => {
-      const status = k.revoked_at ? "revoked" : "active";
-      return `- ${k.label} (${status}) created=${k.created_at} last_used=${k.last_used_at ?? "never"}`;
-    });
-
-    await ctx.reply(`API keys:\n${lines.join("\n")}`, { reply_markup: kb });
+    const rendered = renderKeysMessage(userId);
+    await ctx.reply(rendered.text, { reply_markup: rendered.keyboard });
   });
 
   bot.callbackQuery(/k:(rename|revoke|rotate):(.+)/, async (ctx) => {
@@ -289,6 +331,16 @@ export function createBot(): Bot {
       });
 
       await ctx.answerCallbackQuery({ text: "Revoked" });
+
+      // Update the keys message so button state reflects the revoke.
+      try {
+        const rendered = renderKeysMessage(userId);
+        await ctx.editMessageText(rendered.text, {
+          reply_markup: rendered.keyboard,
+        });
+      } catch {
+        // ignore (message may not be editable)
+      }
       return;
     }
 
@@ -303,6 +355,16 @@ export function createBot(): Bot {
       await ctx.reply(`Send the new label for: ${row.label}`, {
         reply_markup: { force_reply: true },
       });
+
+      try {
+        const prev =
+          ctx.callbackQuery.message && "text" in ctx.callbackQuery.message
+            ? ctx.callbackQuery.message.text
+            : "API keys:";
+        await ctx.editMessageText(`${prev}\n\nStatus: awaiting new label...`);
+      } catch {
+        // ignore
+      }
       return;
     }
 
@@ -321,6 +383,18 @@ export function createBot(): Bot {
       await ctx.reply(`Send a label for the rotated key (old: ${row.label}).`, {
         reply_markup: { force_reply: true },
       });
+
+      try {
+        const prev =
+          ctx.callbackQuery.message && "text" in ctx.callbackQuery.message
+            ? ctx.callbackQuery.message.text
+            : "API keys:";
+        await ctx.editMessageText(
+          `${prev}\n\nStatus: awaiting rotate label...`
+        );
+      } catch {
+        // ignore
+      }
     }
   });
 
@@ -349,6 +423,22 @@ export function createBot(): Bot {
 
     if (!res.ok) {
       await ctx.answerCallbackQuery({ text: res.reason });
+
+      // Best-effort message update for common cases.
+      if (res.reason === "expired") {
+        try {
+          if ("text" in msg && typeof msg.text === "string") {
+            await ctx.editMessageText(
+              `${msg.text}\n\nDecision: EXPIRED (${nowIso()})`
+            );
+          }
+          await ctx.editMessageReplyMarkup({
+            reply_markup: new InlineKeyboard(),
+          });
+        } catch {
+          // ignore
+        }
+      }
       return;
     }
 
@@ -365,6 +455,18 @@ export function createBot(): Bot {
     });
 
     await ctx.answerCallbackQuery({ text: decision });
+
+    // Update the approval message to reflect the decision and remove buttons.
+    try {
+      if ("text" in msg && typeof msg.text === "string") {
+        await ctx.editMessageText(
+          renderApprovalDecisionText({ originalText: msg.text, decision })
+        );
+      }
+      await ctx.editMessageReplyMarkup({ reply_markup: new InlineKeyboard() });
+    } catch {
+      // ignore
+    }
   });
 
   bot.on("message:text", async (ctx) => {
@@ -397,7 +499,10 @@ export function createBot(): Bot {
         });
         clearPendingInput(userId);
         await ctx.reply(
-          `API key created (shown once).\n\nLabel: ${label}\nKey: ${created.keyPlain}`
+          renderOneTimeKeyMessage({ label, apiKey: created.keyPlain }),
+          {
+            parse_mode: "HTML",
+          }
         );
         return;
       }
@@ -451,7 +556,8 @@ export function createBot(): Bot {
         });
 
         await ctx.reply(
-          `Rotated key (shown once).\n\nLabel: ${label}\nKey: ${created.keyPlain}`
+          renderOneTimeKeyMessage({ label, apiKey: created.keyPlain }),
+          { parse_mode: "HTML" }
         );
         return;
       }

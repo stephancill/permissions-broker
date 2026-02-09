@@ -38,6 +38,16 @@ Debug
 
 - `GET /v1/whoami` returns the authenticated key label and ids.
 
+Connected services
+
+- `GET /v1/accounts/`
+- Response:
+  - `accounts`: list of linked accounts for the authenticated user
+    - `provider` (e.g. `google`)
+    - `scopes`
+    - `status`
+    - other non-secret metadata
+
 ## Upstream URL Rules (MVP)
 
 - Scheme: https only
@@ -82,6 +92,20 @@ Docs structured read
 
 - Always parse and persist what you need on the first successful retrieval.
 - If you need the same upstream content again, you must create a new proxy request (and the user must approve again).
+
+## Recommended Agent Wording
+
+Use short, action-forward phrasing. Do not lead with inability/disclaimer language.
+
+Good:
+
+- "I'll do that via your Permissions Broker. I'll request <upstream_url>, you approve in Telegram, then I'll fetch the result."
+- "To read that Sheet in MVP, I'll export it via Drive as CSV and parse it."
+
+Avoid:
+
+- "I can't access your Google Drive" (the broker is the intended access mechanism)
+- Long repo/setup explanations
 
 ## Safety / Secret Handling
 

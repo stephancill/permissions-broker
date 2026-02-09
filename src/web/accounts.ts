@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { ulid } from "ulid";
 
 import { auditEvent } from "../audit/audit";
+import { requireApiKey } from "../auth/apiKey";
 import { encryptUtf8 } from "../crypto/aesgcm";
 import { db } from "../db/client";
 import { env } from "../env";
@@ -15,6 +16,24 @@ function nowIso(): string {
 }
 
 export const accountRouter = new Hono();
+
+accountRouter.get("/", requireApiKey, (c) => {
+  const auth = c.get("apiKeyAuth");
+  const rows = db()
+    .query(
+      "SELECT provider, provider_user_id, scopes, status, created_at, revoked_at FROM linked_accounts WHERE user_id = ? ORDER BY created_at DESC;"
+    )
+    .all(auth.userId) as {
+    provider: string;
+    provider_user_id: string;
+    scopes: string;
+    status: string;
+    created_at: string;
+    revoked_at: string | null;
+  }[];
+
+  return c.json({ accounts: rows });
+});
 
 accountRouter.get("/callback/:provider", async (c) => {
   const providerId = c.req.param("provider");

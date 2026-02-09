@@ -335,6 +335,17 @@ Drop-in principle (terminal responses):
 - Terminal success/failure should return upstream bytes unwrapped, so client parsing matches direct Google API usage.
 - Proxy metadata is added via headers, not body modification.
 
+### GET /v1/accounts/
+
+Purpose:
+
+- List linked/connected provider accounts for the authenticated user.
+
+Behavior:
+
+- Returns a list of non-secret metadata from linked_accounts (provider, scopes, status, timestamps).
+- Does not return any tokens/credentials.
+
 ---
 
 ## Telegram Bot (Polling)
