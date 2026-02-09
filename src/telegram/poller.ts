@@ -6,6 +6,10 @@ export async function startTelegramPoller(bot: Bot): Promise<void> {
   // grammY requires initialization (fetches bot info via getMe) before handleUpdate.
   await bot.init();
 
+  // Long polling and webhooks are mutually exclusive in Telegram.
+  // Ensure we can receive updates via getUpdates in local/dev.
+  await bot.api.deleteWebhook({ drop_pending_updates: false });
+
   let lastUpdateId = (
     db()
       .query("SELECT last_update_id FROM telegram_state WHERE id = 1;")
