@@ -65,18 +65,18 @@ This MVP intentionally optimizes for:
 
 Single Bun process runs four components:
 
-1) HTTP API (Hono)
+1. HTTP API (Hono)
 
 - public proxy endpoints (create request, poll/retrieve)
 - OAuth connect and callback endpoints
 
-2) Telegram poller loop
+2. Telegram poller loop
 
 - calls Telegram getUpdates using long polling
 - processes commands and approval callbacks
 - persists last_update_id in SQLite
 
-3) Executor loop
+3. Executor loop
 
 - processes approved requests
 - fetches Google access token (refresh token flow)
@@ -84,7 +84,7 @@ Single Bun process runs four components:
 - stores terminal status metadata in SQLite
 - stores upstream response bytes in in-memory cache (TTL + size cap)
 
-4) Sweeper loop
+4. Sweeper loop
 
 - expires pending approvals past TTL
 - evicts expired cache entries
