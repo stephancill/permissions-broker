@@ -306,6 +306,11 @@ Exit criteria:
 
 - critical flows covered and deterministic
 
+Implementation notes:
+
+- Add unit tests for URL validation/canonicalization, interpretability parsing, cache consume-on-read semantics, and response size limiting.
+- Keep integration tests lightweight by stubbing upstream HTTP responses when needed.
+
 ## Key Tradeoffs (MVP Acknowledgements)
 
 - In-memory result cache means results can be lost on process restart.
