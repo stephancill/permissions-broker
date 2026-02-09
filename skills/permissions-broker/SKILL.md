@@ -28,6 +28,16 @@ Preferred framing:
 
 - "I can do that via your Permissions Broker. I'll create a request for <upstream_url>, you approve in Telegram, then I'll fetch the result." 
 
+## Polling Behavior (Important)
+
+After creating a proxy request, always attempt to poll/await approval and execution for at least 30 seconds before returning control back to the user.
+
+Guidelines:
+
+- Default to 30 seconds of polling (or longer if the user explicitly asks you to wait).
+- If approval has not happened within that window, return the request_id and clear instructions to approve in Telegram, and continue polling on the next user message.
+- If approval happens quickly, return the upstream result in the same response.
+
 ## Core Workflow
 
 1. Collect inputs
@@ -101,7 +111,8 @@ async function awaitBrokerResult(params: {
   requestId: string;
   timeoutMs?: number;
 }): Promise<Response> {
-  const deadline = Date.now() + (params.timeoutMs ?? 120_000);
+  // Recommended default: wait at least 30s before returning a request_id to the user.
+  const deadline = Date.now() + (params.timeoutMs ?? 30_000);
 
   while (Date.now() < deadline) {
     const res = await fetch(`${params.baseUrl}/v1/proxy/requests/${params.requestId}`, {
@@ -120,6 +131,11 @@ async function awaitBrokerResult(params: {
 
   throw new Error("timed out waiting for approval/execution");
 }
+
+// Suggested control flow:
+// - Start polling for ~30 seconds.
+// - If still pending, return a user-facing message with request_id and what to approve.
+// - On the next user message, poll again (or recreate if expired/consumed).
 
 // Example usage
 // const baseUrl = "https://permissions-broker.steer.fun"
