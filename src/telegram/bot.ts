@@ -1,4 +1,5 @@
 import { Bot, InlineKeyboard } from "grammy";
+import * as oauth from "oauth4webapi";
 import { ulid } from "ulid";
 
 import { auditEvent } from "../audit/audit";
@@ -6,6 +7,10 @@ import { randomBase64Url } from "../crypto/random";
 import { sha256Hex } from "../crypto/sha256";
 import { db } from "../db/client";
 import { env } from "../env";
+import { buildAuthorizationUrl } from "../oauth/flow";
+import type { OAuthProviderConfig } from "../oauth/provider";
+import { getProvider } from "../oauth/registry";
+import { createOauthState } from "../oauth/state";
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -125,6 +130,53 @@ export function createBot(): Bot {
     await ctx.reply(
       "Permissions Broker is running. Use /connect to link a provider and /key to create an API key."
     );
+  });
+
+  bot.command("connect", async (ctx) => {
+    if (!ctx.from) return;
+    const userId = ensureUser(ctx.from.id);
+
+    if (!env.APP_BASE_URL) {
+      await ctx.reply(
+        "APP_BASE_URL is not configured; cannot create OAuth link."
+      );
+      return;
+    }
+
+    if (!env.APP_SECRET) {
+      await ctx.reply(
+        "APP_SECRET is not configured; cannot store refresh tokens."
+      );
+      return;
+    }
+
+    let provider: OAuthProviderConfig;
+    try {
+      provider = getProvider("google");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await ctx.reply(`OAuth provider not configured. ${msg}`);
+      return;
+    }
+
+    const redirectUri = `${env.APP_BASE_URL}/v1/accounts/callback/google`;
+    const codeVerifier = oauth.generateRandomCodeVerifier();
+
+    const { state } = createOauthState({
+      userId,
+      provider: provider.id,
+      ttlMs: 10 * 60_000,
+      pkceVerifier: codeVerifier,
+    });
+
+    const url = await buildAuthorizationUrl({
+      provider,
+      redirectUri,
+      state,
+      codeVerifier,
+    });
+
+    await ctx.reply(`Connect Google: ${url}`);
   });
 
   bot.command("key", async (ctx) => {

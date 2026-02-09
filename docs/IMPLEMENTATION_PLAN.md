@@ -156,6 +156,12 @@ Exit criteria:
 - `/connect` can generate an authorization link (Google provider)
 - callback stores encrypted refresh token + scopes in `linked_accounts`
 
+Implementation notes:
+
+- Implement OAuth flows in a provider-agnostic module with a provider registry and per-provider config living under `src/providers/`.
+- Store OAuth state (and PKCE verifier) in SQLite so callback handling is stateless and restart-safe.
+- Encrypt refresh tokens before storing in SQLite; do not log secrets.
+
 ### Milestone 4 - API Key Authentication Middleware
 
 - Define API key format and issuance

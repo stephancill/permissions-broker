@@ -15,6 +15,7 @@
   "dependencies": {
     "grammy": "^1.39.3",
     "hono": "^4.11.9",
+    "oauth4webapi": "^3.8.4",
     "ulid": "^3.0.2",
     "zod": "^4.3.6"
   },

@@ -2,6 +2,8 @@ import { Hono } from "hono";
 import { migrate } from "./db/migrate";
 import { env } from "./env";
 
+import { accountRouter } from "./web/accounts";
+
 if (env.NODE_ENV !== "test") {
   migrate();
 }
@@ -19,6 +21,8 @@ const app = new Hono();
 
 app.get("/", (c) => c.text("ok"));
 app.get("/healthz", (c) => c.json({ ok: true }));
+
+app.route("/v1/accounts", accountRouter);
 
 Bun.serve({
   port: env.PORT,

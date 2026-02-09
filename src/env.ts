@@ -7,6 +7,10 @@ const EnvSchema = z.object({
   PORT: z.coerce.number().int().positive().default(3000),
   DB_PATH: z.string().min(1).default("./data/dev.sqlite3"),
   TELEGRAM_BOT_TOKEN: z.string().min(1).optional(),
+  APP_BASE_URL: z.string().min(1).optional(),
+  APP_SECRET: z.string().min(1).optional(),
+  GOOGLE_OAUTH_CLIENT_ID: z.string().min(1).optional(),
+  GOOGLE_OAUTH_CLIENT_SECRET: z.string().min(1).optional(),
 });
 
 export type Env = z.infer<typeof EnvSchema>;
