@@ -67,6 +67,13 @@ Exit criteria:
 - `bun run dev` starts server successfully
 - config validation fails fast with clear errors
 
+Implementation notes:
+
+- Added minimal Bun + TypeScript scaffold with Hono and a health endpoint (`src/server.ts`).
+- Added zod-based env parsing with sensible defaults so `bun run dev` starts without secrets (`src/env.ts`, `.env.example`).
+- Added basic scripts for dev/test/typecheck/lint/format and installed tooling (TypeScript + Biome).
+- Added repo hygiene (`.gitignore`) and a minimal `README.md` with local dev commands.
+
 ### Milestone 1 - SQLite Schema + Migrations
 
 - Implement a minimal migration runner:
