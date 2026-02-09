@@ -122,7 +122,7 @@ async function awaitBrokerResult(params: {
 }
 
 // Example usage
-// const baseUrl = process.env.PB_BASE_URL!
+// const baseUrl = "https://permissions-broker.steer.fun"
 // const apiKey = process.env.PB_API_KEY!
 // const upstreamUrl = "https://www.googleapis.com/drive/v3/files?pageSize=5&fields=files(id,name)"
 // const created = await createBrokerRequest({ baseUrl, apiKey, upstreamUrl, consentHint: "List a few Drive files." })
