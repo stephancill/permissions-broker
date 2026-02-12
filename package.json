@@ -7,7 +7,7 @@
     "dev": "bun --hot src/server.ts",
     "start": "bun src/server.ts",
     "migrate": "bun src/db/migrate.ts",
-    "test": "bun test",
+    "test": "NODE_ENV=test bun test",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "biome check .",
     "format": "biome format --write ."

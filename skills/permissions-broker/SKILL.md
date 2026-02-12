@@ -61,13 +61,14 @@ Guidelines:
 
 4. Poll for status / retrieve result
 
-- Poll `GET /v1/proxy/requests/:id` until terminal.
-- If you receive the upstream response (HTTP 200/4xx/etc) you must parse and persist what you need immediately.
-- Do not assume you can fetch the same result again: the broker consumes results on first retrieval.
+- Poll `GET /v1/proxy/requests/:id` until the request is `APPROVED`.
+- Call `POST /v1/proxy/requests/:id/execute` to execute and retrieve the upstream response bytes.
+- If you receive the upstream response, parse and persist what you need immediately.
+- Do not assume you can execute the same request again.
 
 ## Sample Code (Create + Await)
 
-Use these snippets to create a broker request and poll until you can retrieve the upstream response.
+Use these snippets to create a broker request, poll status, then execute to retrieve upstream bytes.
 
 JavaScript/TypeScript (Bun/Node)
 
@@ -124,12 +125,29 @@ async function awaitBrokerResult(params: {
       continue;
     }
 
-    // Terminal: may be upstream bytes (200) or broker error JSON (403/408/410/etc).
-    // IMPORTANT: On SUCCEEDED the broker response is one-time. Read and store what you need now.
+    // Terminal (status-only JSON).
     return res;
   }
 
   throw new Error("timed out waiting for approval/execution");
+}
+
+async function executeBrokerRequest(params: {
+  baseUrl: string;
+  apiKey: string;
+  requestId: string;
+}): Promise<Response> {
+  const res = await fetch(
+    `${params.baseUrl}/v1/proxy/requests/${params.requestId}/execute`,
+    {
+      method: "POST",
+      headers: { authorization: `Bearer ${params.apiKey}` },
+    },
+  );
+
+  // Terminal: upstream bytes (2xx/4xx/5xx) or broker error JSON.
+  // IMPORTANT: execution is one-time. Read and store what you need now.
+  return res;
 }
 
 // Suggested control flow:
@@ -143,8 +161,9 @@ async function awaitBrokerResult(params: {
 // const upstreamUrl = "https://www.googleapis.com/drive/v3/files?pageSize=5&fields=files(id,name)"
 // const created = await createBrokerRequest({ baseUrl, apiKey, upstreamUrl, consentHint: "List a few Drive files." })
 // Tell user: approve request in Telegram
-// const terminalRes = await awaitBrokerResult({ baseUrl, apiKey, requestId: created.request_id })
-// const bodyText = await terminalRes.text()
+// await awaitBrokerResult({ baseUrl, apiKey, requestId: created.request_id })
+// const execRes = await executeBrokerRequest({ baseUrl, apiKey, requestId: created.request_id })
+// const bodyText = await execRes.text()
 ```
 
 Python (requests)
@@ -179,10 +198,18 @@ def await_result(base_url, api_key, request_id, timeout_s=120):
       time.sleep(1)
       continue
 
-    # Terminal response. IMPORTANT: on success this is one-time; read and store now.
+    # Terminal response (status-only).
     return r
 
   raise TimeoutError("timed out waiting for approval/execution")
+
+def execute_request(base_url, api_key, request_id):
+  # IMPORTANT: execution is one-time; read and store now.
+  return requests.post(
+    f"{base_url}/v1/proxy/requests/{request_id}/execute",
+    headers={"Authorization": f"Bearer {api_key}"},
+    timeout=60,
+  )
 ```
 
 ## Constraints You Must Respect
@@ -191,8 +218,7 @@ def await_result(base_url, api_key, request_id, timeout_s=120):
 - Upstream scheme: HTTPS only.
 - Upstream host allowlist: `docs.googleapis.com` and `www.googleapis.com`.
 - Upstream response size cap: 1 MiB.
-- Result cache TTL: short-lived; results can expire if not retrieved quickly.
-- One-time retrieval: on success, the broker consumes the cached response; subsequent polls return 410.
+- One-time execution: after executing a request, you cannot execute it again.
 
 ## Sheets Note (Without Drama)
 
@@ -206,10 +232,10 @@ If the user asks for something that would normally use Sheets API:
 
 ## Handling Common Terminal States
 
-- 202: still pending (approval/execution). Keep polling.
+- 202: still pending (approval). Keep polling.
 - 403: denied by user.
 - 408: approval expired (user did not decide in time).
-- 410: result consumed or expired; recreate the request if you still need it.
+- 410: already executed; recreate the request if you still need it.
 
 ## How To Build Upstream URLs (Google example)
 

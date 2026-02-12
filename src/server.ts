@@ -20,11 +20,6 @@ if (env.TELEGRAM_BOT_TOKEN) {
 }
 
 if (env.NODE_ENV !== "test") {
-  const { startExecutorLoop } = await import("./proxy/executor");
-  startExecutorLoop().catch((err) => {
-    console.error("executor failed", err);
-  });
-
   const { startSweeperLoop } = await import("./proxy/sweeper");
   startSweeperLoop().catch((err) => {
     console.error("sweeper failed", err);

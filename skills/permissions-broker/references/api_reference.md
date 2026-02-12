@@ -25,14 +25,17 @@ Create request
 
 Poll / retrieve
 
+Status (poll)
+
 - `GET /v1/proxy/requests/:id`
-- Non-terminal:
-  - HTTP 202 with a small JSON status payload and `Retry-After`
-- Terminal:
-  - On success: returns upstream bytes (content-type preserved when available) exactly once
-  - Subsequent calls: HTTP 410 (`result_consumed` or `result_expired`)
-  - Denied: HTTP 403
-  - Approval expired: HTTP 408
+- This endpoint is status-only and returns JSON.
+
+Execute (retrieve upstream bytes)
+
+- `POST /v1/proxy/requests/:id/execute`
+- Executes the request (must be APPROVED) and returns the upstream response bytes.
+- Must be called using the same API key that created the request.
+- One-time execution: subsequent calls return HTTP 410.
 
 Debug
 
@@ -90,8 +93,9 @@ Docs structured read
 
 ## One-time Retrieval Gotchas
 
-- Always parse and persist what you need on the first successful retrieval.
-- If you need the same upstream content again, you must create a new proxy request (and the user must approve again).
+Always parse and persist what you need on the first successful execution.
+
+If you need the same upstream content again, you must create a new proxy request (and the user must approve again).
 
 ## Recommended Agent Wording
 

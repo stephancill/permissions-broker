@@ -28,7 +28,6 @@ Core
 Optional
 
 - `pino` (structured logs)
-- `lru-cache` (in-memory TTL + size-capped cache)
 
 Deliberately not using in MVP
 
@@ -45,8 +44,7 @@ Deliberately not using in MVP
 - `src/oauth/` (generic OAuth provider config + flows)
 - `src/providers/` (provider-specific configs and adapters)
 - `src/providers/google/` (Google-specific OAuth config for MVP)
-- `src/proxy/` (request creation, canonicalization, executor loop)
-- `src/cache/` (result cache + consume-on-read)
+- `src/proxy/` (request creation, canonicalization, direct execution)
 - `src/audit/` (audit helpers)
 - `migrations/` (SQL migrations)
 - `docs/` (specs)
@@ -235,60 +233,62 @@ Implementation notes:
 
 ### Milestone 7 - Executor Loop + In-Memory Result Cache
 
-- Executor loop:
-  - claim APPROVED -> EXECUTING in a transaction
+Note: This milestone is now implemented as a direct execution endpoint (no executor loop, no caching).
+
+Updated architecture: direct execution endpoint, no caching.
+
+- Add execute endpoint:
+  - claim APPROVED -> EXECUTING in SQLite to prevent double execution
   - fetch access token via refresh token
   - fetch upstream URL (GET) with injected Authorization header
   - enforce upstream timeout
   - enforce max response bytes (1 MiB)
-  - mark SUCCEEDED/FAILED and store upstream metadata
-  - store upstream body in cache with TTL=2m
-- Cache:
-  - consume-on-read support (delete after retrieval)
-  - size guardrails (max entries / total bytes)
+  - persist SUCCEEDED only for upstream 2xx; otherwise FAILED
+  - return upstream bytes directly from the execute endpoint
 
 Exit criteria:
 
-- an approved request reaches terminal status and caches a result
+- an approved request can be executed once and returns upstream bytes
 
 Implementation notes:
 
+- Execute only on demand via an explicit execute endpoint.
 - Claim work by transitioning APPROVED -> EXECUTING in SQLite to avoid duplicate execution.
-- Fetch an access token using the stored refresh token, then execute the upstream GET with an injected Authorization header.
-- Store upstream response bytes in a short-lived in-memory cache keyed by request_id and mark result_state=AVAILABLE.
+- Persist terminal metadata (status/content-type/bytes) in SQLite, but do not store upstream bodies.
 
 ### Milestone 8 - Polling/Retrieval Endpoint
 
 - Implement `GET /v1/proxy/requests/:id`:
   - non-terminal returns 202 + status JSON
   - denied/expired return 403/408
-  - terminal success returns upstream bytes once, then 410 on subsequent calls
-  - terminal failure preserves upstream status/body when available
+  - terminal returns metadata only (status endpoint)
+
+- Implement `POST /v1/proxy/requests/:id/execute`:
+  - requires status APPROVED
+  - executes the upstream request and returns upstream bytes
+  - one-time execution (subsequent calls return 410)
 
 Exit criteria:
 
-- caller can poll and retrieve upstream response exactly once
+- caller can poll status and execute the request once
 
 Implementation notes:
 
-- Return 202 for non-terminal states with a small status payload and a Retry-After hint.
-- On SUCCEEDED, return the cached upstream response bytes and consume the result immediately (subsequent requests return 410).
-- If the cache entry is missing (TTL elapsed or process restarted), return RESULT_EXPIRED and mark result_state=EXPIRED.
+- Keep `GET /v1/proxy/requests/:id` status-only.
+- Add `POST /v1/proxy/requests/:id/execute` to return upstream bytes once.
+- Enforce that execute must use the same API key that created the request.
 
 ### Milestone 9 - Sweeper Loop
 
 - Expire pending approvals past `approval_expires_at` -> EXPIRED
-- Evict expired cache entries and mark `result_state=EXPIRED`
 
 Exit criteria:
 
 - approvals expire automatically
-- results expire automatically if not retrieved within cache TTL
 
 Implementation notes:
 
 - Periodically transition PENDING_APPROVAL requests past approval_expires_at to EXPIRED.
-- Mark AVAILABLE results as EXPIRED after the cache TTL window so polling returns a stable RESULT_EXPIRED error.
 
 ### Milestone 10 - Tests + Hardening
 
@@ -297,7 +297,7 @@ Implementation notes:
   - canonicalization stability
   - truncation rules for Telegram
   - state transitions and TTL behavior
-  - consume-on-read correctness
+  - one-time execute correctness
 - Integration-like tests:
   - stub upstream HTTP server (simulate Google)
   - simulate approvals by updating DB and/or invoking handlers
@@ -308,11 +308,11 @@ Exit criteria:
 
 Implementation notes:
 
-- Add unit tests for URL validation/canonicalization, interpretability parsing, cache consume-on-read semantics, and response size limiting.
+- Add unit tests for URL validation/canonicalization, interpretability parsing, one-time execute semantics, and response size limiting.
 - Keep integration tests lightweight by stubbing upstream HTTP responses when needed.
 
 ## Key Tradeoffs (MVP Acknowledgements)
 
-- In-memory result cache means results can be lost on process restart.
+- Upstream response bodies are not persisted; if a client needs the body again it must create a new request and be re-approved.
 - OAuth is designed to be generic, but providers may require per-provider quirks.
 - Dropping operation allowlists makes the proxy more flexible, but pushes safety into host boundaries, method boundaries (GET only), and user approvals.

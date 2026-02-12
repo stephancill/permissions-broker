@@ -4,7 +4,7 @@ Telegram-controlled permissions gate + proxy API for Google APIs.
 
 - Agent/app calls a single proxy API using a user-issued API key.
 - Every request pauses and prompts the user in Telegram to Approve/Deny.
-- On approval, the broker executes the upstream Google API GET request and returns the upstream response exactly once (polling).
+- On approval, the agent can execute the upstream Google API GET request and the broker returns the upstream response.
 
 Docs
 
@@ -60,7 +60,8 @@ Auth:
 Endpoints:
 
 - `POST /v1/proxy/request` (create a request; always prompts in Telegram)
-- `GET /v1/proxy/requests/:id` (poll status and retrieve upstream response exactly once)
+- `GET /v1/proxy/requests/:id` (poll status only)
+- `POST /v1/proxy/requests/:id/execute` (execute approved request and return upstream response)
 - `GET /v1/accounts/` (list linked/connected provider accounts for the authenticated user)
 - `GET /v1/whoami` (debug: verify API key auth)
 

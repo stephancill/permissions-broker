@@ -28,13 +28,14 @@ This MVP intentionally optimizes for:
   - always show the raw URL and raw query parameters (truncated) for user decision-making
 - Storage:
   - no persistent storage of upstream response bodies
-  - ephemeral in-memory result cache with short TTL; consumed on first retrieval
+  - no caching of upstream responses; execution returns upstream bytes directly
 
 ## Non-Goals (MVP)
 
 - No write operations (no POST/PATCH/PUT/DELETE)
 - No webhook-based Telegram integration (use long polling only)
-- No job queue infrastructure (single-process, in-memory cache)
+- No job queue infrastructure
+- No job queue infrastructure
 - No auto-approve policies (every request prompts)
 - No multi-instance deployment support (no cross-process caching / distributed locks)
 - No arbitrary outbound proxying (strict host allowlist)
@@ -51,7 +52,7 @@ This MVP intentionally optimizes for:
   - method allowed: GET only
   - request bodies disallowed
 - Approval TTL: 2 minutes
-- Result cache TTL: 2 minutes (in-memory only)
+- No result caching; execution returns upstream bytes directly
 - Upstream response size cap: 1 MiB
 - API key labels:
   - required at creation
@@ -76,19 +77,16 @@ Single Bun process runs four components:
 - processes commands and approval callbacks
 - persists last_update_id in SQLite
 
-3. Executor loop
+3. Execution (on demand)
 
-- processes approved requests
+- execution happens when the caller invokes the execute endpoint
 - fetches Google access token (refresh token flow)
 - executes upstream GET against Google API
 - stores terminal status metadata in SQLite
-- stores upstream response bytes in in-memory cache (TTL + size cap)
 
 4. Sweeper loop
 
 - expires pending approvals past TTL
-- evicts expired cache entries
-- updates result_state when cache entries expire without retrieval
 
 Deployment assumption (MVP): one process, one SQLite DB file.
 
@@ -169,7 +167,7 @@ Uniqueness constraints:
   - upstream_content_type (nullable)
   - upstream_bytes (nullable)
 - Result lifecycle:
-  - result_state (enum): NONE | AVAILABLE | CONSUMED | EXPIRED
+  - result_state (deprecated in this architecture; execution is one-time and not cached)
 - Error fields (sanitized proxy-side):
   - error_code (nullable)
   - error_message (nullable)
@@ -290,7 +288,7 @@ Response:
 
 Purpose:
 
-- Poll status and (once terminal) retrieve upstream response exactly once.
+- Poll status and retrieve metadata (status-only; no upstream body).
 
 Non-terminal statuses:
 
@@ -308,32 +306,24 @@ Denied/expired:
   - HTTP 408
   - proxy error payload includes error_code=APPROVAL_EXPIRED, plus request_id
 
-Success:
+Notes:
 
-- If request is SUCCEEDED and cached result is AVAILABLE:
-  - return upstream HTTP status (typically 200)
-  - return upstream body bytes as-is
-  - return upstream Content-Type when known
-  - include X-Proxy-Request-Id: <request_id>
-  - consume-on-read: delete cached body and mark result_state=CONSUMED
+- This endpoint is status-only. To execute and retrieve upstream response bytes, use the execute endpoint below.
 
-Consumed/expired result:
+### POST /v1/proxy/requests/:request_id/execute
 
-- If SUCCEEDED and result_state=CONSUMED:
-  - HTTP 410 with error_code=RESULT_CONSUMED
-- If SUCCEEDED and result_state=EXPIRED:
-  - HTTP 410 with error_code=RESULT_EXPIRED
+Purpose:
 
-Failure:
+- Execute an approved request once and return the upstream HTTP response bytes directly (no result caching).
 
-- If FAILED:
-  - preserve upstream HTTP status and upstream error body when available and within size cap
-  - otherwise return proxy error payload with error_code=UPSTREAM_FAILED (or more specific codes)
+Behavior:
 
-Drop-in principle (terminal responses):
-
-- Terminal success/failure should return upstream bytes unwrapped, so client parsing matches direct Google API usage.
-- Proxy metadata is added via headers, not body modification.
+- Requires request status to be APPROVED.
+- Must be called with the same API key that created the request.
+- Claims the request (APPROVED -> EXECUTING) to prevent double execution.
+- Executes upstream GET with injected OAuth Authorization header.
+- Persists terminal metadata in proxy_requests.
+- Returns the upstream response body with upstream HTTP status and Content-Type.
 
 ### GET /v1/accounts/
 
@@ -430,37 +420,22 @@ Scopes:
 
 ---
 
-## Execution and Caching
+## Execution
 
-Executor loop behavior:
+Execution behavior:
 
-- Claim APPROVED requests by transitioning to EXECUTING in a transaction.
-- Execute upstream GET with:
-  - injected Authorization header from user's access token
-  - no caller-provided Authorization/Cookie forwarding
-- Enforce response cap:
-  - if response exceeds 1 MiB, terminate read and mark FAILED with RESPONSE_TOO_LARGE
-- On success:
-  - mark SUCCEEDED
-  - write upstream metadata (status, content-type, bytes)
-  - set result_state=AVAILABLE
-  - store body bytes in in-memory cache for 2 minutes
-- On failure:
-  - mark FAILED
-  - store upstream metadata when available
-  - cache upstream error body only if within size cap and useful for drop-in behavior
+- Requests are executed only when the caller invokes the execute endpoint:
+  - `POST /v1/proxy/requests/:request_id/execute`
+- The execute endpoint claims the request (APPROVED -> EXECUTING), performs the upstream GET, persists terminal metadata, and returns upstream bytes directly.
 
 Sweeper loop behavior:
 
 - For PENDING_APPROVAL where approval_expires_at < now:
   - set status=EXPIRED
-- For cache entries past TTL:
-  - evict entry
-  - set result_state=EXPIRED for SUCCEEDED requests that were never retrieved
 
 Known limitation:
 
-- If the process restarts, cached results are lost; requests may become RESULT_EXPIRED even if SUCCEEDED.
+- The execute endpoint returns upstream bytes directly and does not persist response bodies.
 
 ---
 
@@ -504,7 +479,7 @@ Proxy-level errors (examples):
 - DISALLOWED_UPSTREAM_HOST (400/403)
 - APPROVAL_EXPIRED (408)
 - DENIED (403)
-- RESULT_EXPIRED / RESULT_CONSUMED (410)
+- ALREADY_EXECUTED (410)
 - RESPONSE_TOO_LARGE (502)
 - UPSTREAM_TIMEOUT (504)
 - UPSTREAM_FAILED (pass through upstream status when available)
@@ -558,7 +533,6 @@ Required configuration values:
 Operational toggles (recommended):
 
 - approval TTL
-- result cache TTL
 - max response bytes
 - upstream request timeout
 
@@ -571,10 +545,11 @@ Functional:
 - user can link Google account
 - user can create labeled API key and rename it
 - creating a proxy request sends an approval prompt that includes api key label snapshot
-- approving executes request and allows exactly one successful retrieval
+- approving allows the agent to execute the request
+- executing returns the upstream response once
 - denying returns DENIED
 - letting approval TTL lapse returns APPROVAL_EXPIRED
-- letting cache TTL lapse returns RESULT_EXPIRED
+- attempting to execute twice returns ALREADY_EXECUTED
 
 Safety:
 
@@ -587,7 +562,7 @@ Safety:
 Reliability:
 
 - Telegram last_update_id persists across restarts
-- restarting process after SUCCEEDED but before retrieval leads to RESULT_EXPIRED (expected MVP behavior)
+- restart does not affect already executed requests (no cached results)
 
 ---
 
