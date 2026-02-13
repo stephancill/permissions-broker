@@ -22,6 +22,24 @@ function getApplied(db: ReturnType<typeof openDb>): Set<string> {
   return new Set(rows.map((r) => r.id));
 }
 
+function isIgnorableMigrationError(err: unknown, file: string): boolean {
+  if (!(err instanceof Error)) return false;
+  const msg = err.message || "";
+
+  // SQLite does not support `ADD COLUMN IF NOT EXISTS` in older versions.
+  // If a migration attempts to add a column that already exists (because the
+  // DB was manually patched or a migration was partially applied), treat it as
+  // already satisfied.
+  if (
+    file === "0004_git_sessions_secret_ciphertext.sql" &&
+    msg.includes("duplicate column name: session_secret_ciphertext")
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
 export function migrate(): void {
   const db = openDb();
   ensureSchemaMigrations(db);
@@ -39,7 +57,12 @@ export function migrate(): void {
     const sql = readFileSync(join(migrationsDir, file), "utf8");
 
     db.transaction(() => {
-      db.exec(sql);
+      try {
+        db.exec(sql);
+      } catch (err) {
+        if (!isIgnorableMigrationError(err, file)) throw err;
+      }
+
       db.query(
         "INSERT INTO schema_migrations (id, applied_at) VALUES (?, ?);"
       ).run(file, nowIso());
