@@ -10,6 +10,18 @@ describe("validateUpstreamUrl", () => {
     expect(url.hostname).toBe("docs.googleapis.com");
   });
 
+  test("accepts api.github.com", () => {
+    const url = validateUpstreamUrl("https://api.github.com/user");
+    expect(url.hostname).toBe("api.github.com");
+  });
+
+  test("accepts sheets.googleapis.com", () => {
+    const url = validateUpstreamUrl(
+      "https://sheets.googleapis.com/v4/spreadsheets/sheet123?fields=properties.title"
+    );
+    expect(url.hostname).toBe("sheets.googleapis.com");
+  });
+
   test("rejects non-https", () => {
     expect(() =>
       validateUpstreamUrl("http://docs.googleapis.com/v1/documents/abc")

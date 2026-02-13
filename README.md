@@ -1,10 +1,15 @@
 # permissions-broker
 
-Telegram-controlled permissions gate + proxy API for Google APIs.
+Telegram-controlled permissions gate + proxy API for third-party providers.
 
 - Agent/app calls a single proxy API using a user-issued API key.
 - Every request pauses and prompts the user in Telegram to Approve/Deny.
-- On approval, the agent can execute the upstream Google API GET request and the broker returns the upstream response.
+- On approval, the agent can execute the upstream API request and the broker returns the upstream response.
+
+Current providers:
+
+- Google APIs (Drive/Docs/Sheets)
+- GitHub API (REST)
 
 Docs
 
@@ -48,7 +53,9 @@ In Telegram (to your bot):
 
 - `/start`
 - `/key <label>` (or `/key` to be prompted for a label)
-- `/connect` (generates Google OAuth link)
+- `/connect` (shows connection status + buttons)
+- `/connect google` (generates Google OAuth link)
+- `/connect github` (generates GitHub OAuth link)
 - `/keys` (rename/revoke/rotate keys)
 
 ## Public API (MVP)
@@ -67,8 +74,13 @@ Endpoints:
 
 Upstream constraints (MVP)
 
-- GET only
 - https only
-- allowed hosts: `docs.googleapis.com`, `www.googleapis.com`
+- allowed hosts are provider-defined (currently Google + GitHub)
+- methods: `GET`, `POST`, `PUT`, `PATCH`, `DELETE`
 - response size cap: 1 MiB
+- request body cap: 256 KiB
+- request bodies are stored as bytes and interpreted based on `content-type`
+  - JSON: send an object/array (or JSON string) with `content-type: application/json`
+  - Text: send a string with `content-type: text/*`
+  - Binary: send a base64 string and set `content-type` appropriately
 - result TTL is short-lived and responses are consumed on first retrieval

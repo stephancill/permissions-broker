@@ -74,6 +74,7 @@ accountRouter.get("/callback/:provider", async (c) => {
   markOauthStateUsed(state);
 
   const refreshToken = tokenResult.refresh_token;
+  const accessToken = tokenResult.access_token;
   const scope = tokenResult.scope;
 
   const scopes = scope ?? provider.scopes.join(" ");
@@ -87,9 +88,10 @@ accountRouter.get("/callback/:provider", async (c) => {
     refresh_token_ciphertext: Uint8Array;
   } | null;
 
-  if (!refreshToken && !existing) {
+  const tokenToStore = refreshToken ?? accessToken;
+  if (!tokenToStore && !existing) {
     return c.text(
-      "No refresh token returned. Try removing app access in your provider account and reconnect.",
+      "No token returned. Try removing app access in your provider account and reconnect.",
       400
     );
   }
@@ -98,8 +100,8 @@ accountRouter.get("/callback/:provider", async (c) => {
   const now = nowIso();
 
   if (existing) {
-    if (refreshToken) {
-      const ct = await encryptUtf8(refreshToken);
+    if (tokenToStore) {
+      const ct = await encryptUtf8(tokenToStore);
       db()
         .query(
           "UPDATE linked_accounts SET scopes = ?, refresh_token_ciphertext = ?, status = 'active', revoked_at = NULL WHERE id = ?;"
@@ -113,7 +115,7 @@ accountRouter.get("/callback/:provider", async (c) => {
         .run(scopes, existing.id);
     }
   } else {
-    const ct = await encryptUtf8(refreshToken as string);
+    const ct = await encryptUtf8(tokenToStore as string);
     db()
       .query(
         "INSERT INTO linked_accounts (id, user_id, provider, provider_user_id, scopes, refresh_token_ciphertext, status, created_at, revoked_at) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, NULL);"

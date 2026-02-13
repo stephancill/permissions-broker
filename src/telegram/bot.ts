@@ -7,6 +7,7 @@ import { randomBase64Url } from "../crypto/random";
 import { sha256Hex } from "../crypto/sha256";
 import { db } from "../db/client";
 import { env } from "../env";
+import { setGitSessionStatus } from "../git/sessions";
 import { buildAuthorizationUrl } from "../oauth/flow";
 import type { OAuthProviderConfig } from "../oauth/provider";
 import { getProvider } from "../oauth/registry";
@@ -223,19 +224,20 @@ export function createBot(): Bot {
     );
   });
 
-  bot.command("connect", async (ctx) => {
-    if (!ctx.from) return;
-    const userId = ensureUser(ctx.from.id);
-
+  async function sendConnectLink(params: {
+    ctx: { reply: (text: string) => Promise<unknown> };
+    userId: string;
+    providerId: string;
+  }): Promise<void> {
     if (!env.APP_BASE_URL) {
-      await ctx.reply(
+      await params.ctx.reply(
         "APP_BASE_URL is not configured; cannot create OAuth link."
       );
       return;
     }
 
     if (!env.APP_SECRET) {
-      await ctx.reply(
+      await params.ctx.reply(
         "APP_SECRET is not configured; cannot store refresh tokens."
       );
       return;
@@ -243,18 +245,17 @@ export function createBot(): Bot {
 
     let provider: OAuthProviderConfig;
     try {
-      provider = getProvider("google");
+      provider = getProvider(params.providerId);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      await ctx.reply(`OAuth provider not configured. ${msg}`);
+      await params.ctx.reply(`OAuth provider not configured. ${msg}`);
       return;
     }
 
-    const redirectUri = `${env.APP_BASE_URL}/v1/accounts/callback/google`;
+    const redirectUri = `${env.APP_BASE_URL}/v1/accounts/callback/${params.providerId}`;
     const codeVerifier = oauth.generateRandomCodeVerifier();
-
     const { state } = createOauthState({
-      userId,
+      userId: params.userId,
       provider: provider.id,
       ttlMs: 10 * 60_000,
       pkceVerifier: codeVerifier,
@@ -267,7 +268,70 @@ export function createBot(): Bot {
       codeVerifier,
     });
 
-    await ctx.reply(`Connect Google: ${url}`);
+    await params.ctx.reply(`Connect ${params.providerId}: ${url}`);
+  }
+
+  bot.command("connect", async (ctx) => {
+    if (!ctx.from) return;
+    const userId = ensureUser(ctx.from.id);
+
+    const raw = (ctx.match ?? "").toString().trim();
+
+    if (!raw) {
+      const rows = db()
+        .query(
+          "SELECT provider, status, scopes, created_at, revoked_at FROM linked_accounts WHERE user_id = ? ORDER BY created_at DESC;"
+        )
+        .all(userId) as {
+        provider: string;
+        status: string;
+        scopes: string;
+        created_at: string;
+        revoked_at: string | null;
+      }[];
+
+      const byProvider = new Map<string, (typeof rows)[number]>();
+      for (const r of rows) {
+        if (!byProvider.has(r.provider)) byProvider.set(r.provider, r);
+      }
+
+      const supported = ["google", "github"] as const;
+      const connectedLines: string[] = [];
+      for (const p of supported) {
+        const r = byProvider.get(p);
+        if (!r) {
+          connectedLines.push(`- ${p}: not connected`);
+          continue;
+        }
+        connectedLines.push(
+          `- ${p}: ${r.status} scopes=${r.scopes} created=${r.created_at}`
+        );
+      }
+
+      const kb = new InlineKeyboard();
+      for (const p of supported) {
+        if (!byProvider.get(p) || byProvider.get(p)?.status !== "active") {
+          kb.text(`Connect ${p}`, `c:connect:${p}`).row();
+        }
+      }
+
+      await ctx.reply(
+        `Connected accounts:\n${connectedLines.join("\n")}\n\nUse /connect <provider> or the buttons below.`,
+        { reply_markup: kb }
+      );
+      return;
+    }
+
+    await sendConnectLink({ ctx, userId, providerId: raw });
+  });
+
+  bot.callbackQuery(/c:connect:(google|github)/, async (ctx) => {
+    if (!ctx.from) return;
+    const providerId = ctx.match?.[1] ?? "";
+    const userId = ensureUser(ctx.from.id);
+
+    await ctx.answerCallbackQuery({ text: "link generated" });
+    await sendConnectLink({ ctx, userId, providerId });
   });
 
   bot.command("key", async (ctx) => {
@@ -523,6 +587,101 @@ export function createBot(): Bot {
       // ignore
     }
   });
+
+  bot.callbackQuery(
+    /gs:(approve_clone|approve_push_block|approve_push_allow|deny):(.+)/,
+    async (ctx) => {
+      if (!ctx.from) return;
+      const action = ctx.match?.[1];
+      const sessionId = ctx.match?.[2];
+      const userId = ensureUser(ctx.from.id);
+
+      const msg = ctx.callbackQuery.message;
+      if (!msg || !("message_id" in msg)) {
+        await ctx.answerCallbackQuery({ text: "Missing message" });
+        return;
+      }
+
+      try {
+        if (action === "deny") {
+          setGitSessionStatus({ sessionId, userId, status: "DENIED" });
+          auditEvent({
+            userId,
+            actorType: "telegram",
+            actorId: String(ctx.from.id),
+            eventType: "git_session_denied",
+            event: { sessionId },
+          });
+          await ctx.answerCallbackQuery({ text: "denied" });
+        } else if (action === "approve_clone") {
+          setGitSessionStatus({ sessionId, userId, status: "APPROVED" });
+          auditEvent({
+            userId,
+            actorType: "telegram",
+            actorId: String(ctx.from.id),
+            eventType: "git_session_approved",
+            event: { sessionId, operation: "clone" },
+          });
+          await ctx.answerCallbackQuery({ text: "approved" });
+        } else if (action === "approve_push_block") {
+          setGitSessionStatus({
+            sessionId,
+            userId,
+            status: "APPROVED",
+            allowDefaultBranchPush: false,
+          });
+          auditEvent({
+            userId,
+            actorType: "telegram",
+            actorId: String(ctx.from.id),
+            eventType: "git_session_approved",
+            event: {
+              sessionId,
+              operation: "push",
+              allowDefaultBranchPush: false,
+            },
+          });
+          await ctx.answerCallbackQuery({ text: "approved" });
+        } else if (action === "approve_push_allow") {
+          setGitSessionStatus({
+            sessionId,
+            userId,
+            status: "APPROVED",
+            allowDefaultBranchPush: true,
+          });
+          auditEvent({
+            userId,
+            actorType: "telegram",
+            actorId: String(ctx.from.id),
+            eventType: "git_session_approved",
+            event: {
+              sessionId,
+              operation: "push",
+              allowDefaultBranchPush: true,
+            },
+          });
+          await ctx.answerCallbackQuery({ text: "approved" });
+        }
+
+        try {
+          if ("text" in msg && typeof msg.text === "string") {
+            const decision = action === "deny" ? "DENIED" : "APPROVED";
+            await ctx.editMessageText(
+              `${msg.text}\n\nDecision: ${decision} (${nowIso()})`
+            );
+          }
+          await ctx.editMessageReplyMarkup({
+            reply_markup: new InlineKeyboard(),
+          });
+        } catch {
+          // ignore
+        }
+      } catch (err) {
+        const em = err instanceof Error ? err.message : String(err);
+        await ctx.answerCallbackQuery({ text: em });
+      }
+    }
+  );
 
   bot.on("message:text", async (ctx) => {
     if (!ctx.from) return;

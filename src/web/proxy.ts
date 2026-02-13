@@ -6,18 +6,169 @@ import { requireApiKey } from "../auth/apiKey";
 import { decryptUtf8 } from "../crypto/aesgcm";
 import { db } from "../db/client";
 import { env } from "../env";
-import { refreshAccessToken } from "../oauth/flow";
-import { getProvider } from "../oauth/registry";
-import { interpretUpstreamUrl } from "../proxy/interpret";
+import { interpretProxyRequest } from "../proxy/interpret";
+import { getProxyProviderForUrl } from "../proxy/providerRegistry";
 import { readBodyWithLimit } from "../proxy/readLimit";
 import { createProxyRequest } from "../proxy/requests";
+import { validateUpstreamUrl } from "../proxy/url";
 import { telegramApi } from "../telegram/api";
 
 const CreateProxyRequestSchema = z.object({
   upstream_url: z.string().min(1),
+  method: z
+    .enum(["GET", "POST", "PUT", "PATCH", "DELETE"])
+    .optional()
+    .default("GET"),
+  headers: z.record(z.string(), z.string()).optional(),
+  body: z.unknown().optional(),
   consent_hint: z.string().optional(),
   idempotency_key: z.string().optional(),
 });
+
+function normalizeHeaders(
+  providerExtraAllowed: Set<string>,
+  headers: Record<string, string> | undefined
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!headers) return out;
+
+  for (const [kRaw, vRaw] of Object.entries(headers)) {
+    const k = kRaw.trim().toLowerCase();
+    const v = vRaw.trim();
+    if (!k || !v) continue;
+    if (k === "authorization") continue;
+    if (k.length > 100 || v.length > 4000) continue;
+    // Keep a small, explicit allowlist. Provider-specific keys are configured
+    // by the provider implementation.
+    if (
+      k !== "accept" &&
+      k !== "content-type" &&
+      k !== "if-match" &&
+      k !== "if-none-match" &&
+      !providerExtraAllowed.has(k)
+    ) {
+      continue;
+    }
+    out[k] = v;
+  }
+
+  return out;
+}
+
+function encodeRequestBodyBase64(params: {
+  method: string;
+  headers: Record<string, string>;
+  body: unknown | undefined;
+}): { bodyBase64?: string; contentType?: string } {
+  const method = params.method.toUpperCase();
+  if (method === "GET" || method === "DELETE") {
+    if (params.body != null)
+      throw new Error("GET/DELETE must not include a body");
+    return {};
+  }
+
+  const body = params.body;
+  if (body == null) return {};
+
+  const ctRaw = params.headers["content-type"];
+  const ct = ctRaw ? ctRaw.split(";", 1)[0]?.trim().toLowerCase() : undefined;
+
+  // If the caller didn't specify a content-type, pick a reasonable default.
+  // Interpretability should come from content-type when present.
+  const inferredCt =
+    ct ?? (typeof body === "string" ? "text/plain" : "application/json");
+
+  if (inferredCt === "application/json" || inferredCt.endsWith("+json")) {
+    const text = typeof body === "string" ? body : JSON.stringify(body);
+    const bytes = new TextEncoder().encode(text);
+    if (bytes.byteLength > 256 * 1024) throw new Error("body too large");
+    return {
+      bodyBase64: Buffer.from(bytes).toString("base64"),
+      contentType: ctRaw ?? "application/json",
+    };
+  }
+
+  const isTextual =
+    inferredCt.startsWith("text/") ||
+    inferredCt === "application/x-www-form-urlencoded" ||
+    inferredCt.endsWith("+xml") ||
+    inferredCt === "application/xml";
+
+  if (isTextual) {
+    if (typeof body !== "string") {
+      throw new Error(
+        "textual request bodies must be provided as a string (set content-type accordingly)"
+      );
+    }
+
+    const bytes = new TextEncoder().encode(body);
+    if (bytes.byteLength > 256 * 1024) throw new Error("body too large");
+    return {
+      bodyBase64: Buffer.from(bytes).toString("base64"),
+      contentType: ctRaw ?? "text/plain; charset=utf-8",
+    };
+  }
+
+  // Generic binary: the API accepts a base64 string and stores raw bytes.
+  if (typeof body !== "string") {
+    throw new Error(
+      "binary request bodies must be provided as a base64 string (set content-type accordingly)"
+    );
+  }
+
+  const trimmed = body.trim();
+  const bytes = Buffer.from(trimmed, "base64");
+  if (bytes.byteLength > 256 * 1024) throw new Error("body too large");
+  return {
+    bodyBase64: Buffer.from(bytes).toString("base64"),
+    contentType: ctRaw,
+  };
+}
+
+function decodeBodyForInterpret(params: {
+  contentType: string | undefined;
+  bodyBase64: string | undefined;
+}): {
+  bodyText?: string;
+  bodyJson?: unknown;
+  bodySummary?: string;
+} {
+  if (!params.bodyBase64) return {};
+
+  const bytes = Buffer.from(params.bodyBase64, "base64");
+  const ctRaw = params.contentType;
+  const ct = ctRaw ? ctRaw.split(";", 1)[0]?.trim().toLowerCase() : "";
+
+  const isJson = ct === "application/json" || ct.endsWith("+json");
+  const isTextual =
+    ct.startsWith("text/") ||
+    ct === "application/x-www-form-urlencoded" ||
+    ct.endsWith("+xml") ||
+    ct === "application/xml";
+
+  if (isJson || isTextual) {
+    const text = new TextDecoder().decode(bytes);
+    if (isJson) {
+      try {
+        return {
+          bodyText: text,
+          bodyJson: JSON.parse(text),
+          bodySummary: text,
+        };
+      } catch {
+        return { bodyText: text, bodySummary: text };
+      }
+    }
+
+    return { bodyText: text, bodySummary: text };
+  }
+
+  const prefix = bytes.subarray(0, 24);
+  const b64Prefix = Buffer.from(prefix).toString("base64");
+  return {
+    bodySummary: `<binary ${bytes.byteLength} bytes; base64_prefix=${b64Prefix}…>`,
+  };
+}
 
 function truncate(s: string, max: number): string {
   if (s.length <= max) return s;
@@ -102,7 +253,7 @@ proxyRouter.post("/requests/:id/execute", requireApiKey, async (c) => {
 
   const row = db()
     .query(
-      "SELECT id, user_id, api_key_id, status, approval_expires_at, upstream_url FROM proxy_requests WHERE id = ? AND user_id = ? AND api_key_id = ?;"
+      "SELECT id, user_id, api_key_id, status, approval_expires_at, upstream_url, method, request_headers_json, request_body_base64 FROM proxy_requests WHERE id = ? AND user_id = ? AND api_key_id = ?;"
     )
     .get(requestId, auth.userId, auth.apiKeyId) as {
     id: string;
@@ -111,6 +262,9 @@ proxyRouter.post("/requests/:id/execute", requireApiKey, async (c) => {
     status: string;
     approval_expires_at: string;
     upstream_url: string;
+    method: string;
+    request_headers_json: string | null;
+    request_body_base64: string | null;
   } | null;
 
   if (!row) return c.json({ error: "forbidden" }, 403);
@@ -203,21 +357,26 @@ proxyRouter.post("/requests/:id/execute", requireApiKey, async (c) => {
           row.id
         );
 
-      const headers = new Headers();
-      headers.set("X-Proxy-Request-Id", row.id);
-      if (contentType) headers.set("Content-Type", contentType);
+      const outHeaders = new Headers();
+      outHeaders.set("X-Proxy-Request-Id", row.id);
+      if (contentType) outHeaders.set("Content-Type", contentType);
       const ab = body.buffer.slice(
         body.byteOffset,
         body.byteOffset + body.byteLength
       );
-      return new Response(ab, { status: res.status, headers });
+      return new Response(ab, { status: res.status, headers: outHeaders });
     }
+
+    const url = new URL(row.upstream_url);
+    const provider = getProxyProviderForUrl(url);
 
     const acct = db()
       .query(
-        "SELECT refresh_token_ciphertext FROM linked_accounts WHERE user_id = ? AND provider = 'google' AND status = 'active' LIMIT 1;"
+        "SELECT refresh_token_ciphertext FROM linked_accounts WHERE user_id = ? AND provider = ? AND status = 'active' LIMIT 1;"
       )
-      .get(auth.userId) as { refresh_token_ciphertext: Uint8Array } | null;
+      .get(auth.userId, provider.id) as {
+      refresh_token_ciphertext: Uint8Array;
+    } | null;
 
     if (!acct) {
       db()
@@ -225,7 +384,14 @@ proxyRouter.post("/requests/:id/execute", requireApiKey, async (c) => {
           "UPDATE proxy_requests SET status = 'FAILED', updated_at = ?, error_code = 'NO_LINKED_ACCOUNT' WHERE id = ?;"
         )
         .run(new Date().toISOString(), row.id);
-      return c.json({ error: "no_linked_account", request_id: row.id }, 409);
+      return c.json(
+        {
+          error: "no_linked_account",
+          provider: provider.id,
+          request_id: row.id,
+        },
+        409
+      );
     }
 
     if (!env.APP_SECRET) {
@@ -237,19 +403,48 @@ proxyRouter.post("/requests/:id/execute", requireApiKey, async (c) => {
       return c.json({ error: "server_misconfigured", request_id: row.id }, 500);
     }
 
-    const refreshToken = await decryptUtf8(acct.refresh_token_ciphertext);
-    const provider = getProvider("google");
-    const token = await refreshAccessToken({ provider, refreshToken });
+    const storedToken = await decryptUtf8(acct.refresh_token_ciphertext);
+
+    const accessToken = await provider.getAccessToken({
+      storedToken,
+    });
+
+    let reqHeaders: Record<string, string> = {};
+    if (row.request_headers_json) {
+      try {
+        reqHeaders = JSON.parse(row.request_headers_json) as Record<
+          string,
+          string
+        >;
+      } catch {
+        reqHeaders = {};
+      }
+    }
+
+    // Never allow caller-provided Authorization.
+    delete (reqHeaders as Record<string, string>).authorization;
+
+    provider.applyUpstreamRequestHeaderDefaults({ headers: reqHeaders });
+
+    const upstreamHeaders = new Headers();
+    for (const [k, v] of Object.entries(reqHeaders)) {
+      upstreamHeaders.set(k, v);
+    }
+    upstreamHeaders.set("authorization", `Bearer ${accessToken}`);
+
+    const method = (row.method || "GET").toUpperCase();
+    const bodyBytes = row.request_body_base64
+      ? Buffer.from(row.request_body_base64, "base64")
+      : null;
 
     const ctrl = new AbortController();
     const timeout = setTimeout(() => ctrl.abort(), 60_000);
     let res: Response;
     try {
       res = await fetch(row.upstream_url, {
-        method: "GET",
-        headers: {
-          authorization: `Bearer ${token.access_token}`,
-        },
+        method,
+        headers: upstreamHeaders,
+        body: bodyBytes,
         signal: ctrl.signal,
       });
     } finally {
@@ -287,15 +482,15 @@ proxyRouter.post("/requests/:id/execute", requireApiKey, async (c) => {
       event: { upstream_status: res.status, bytes: body.byteLength },
     });
 
-    const headers = new Headers();
-    headers.set("X-Proxy-Request-Id", row.id);
-    if (contentType) headers.set("Content-Type", contentType);
+    const outHeaders = new Headers();
+    outHeaders.set("X-Proxy-Request-Id", row.id);
+    if (contentType) outHeaders.set("Content-Type", contentType);
 
     const ab = body.buffer.slice(
       body.byteOffset,
       body.byteOffset + body.byteLength
     );
-    return new Response(ab, { status: res.status, headers });
+    return new Response(ab, { status: res.status, headers: outHeaders });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     const errorCode =
@@ -317,25 +512,63 @@ proxyRouter.post("/request", requireApiKey, async (c) => {
 
   const {
     upstream_url: upstreamUrl,
+    method,
+    headers,
+    body,
     consent_hint: consentHint,
     idempotency_key: idempotencyKey,
   } = parsed.data;
 
-  let created: Awaited<ReturnType<typeof createProxyRequest>>;
+  let validatedUrl: URL;
   try {
-    created = await createProxyRequest({
-      userId: auth.userId,
-      apiKeyId: auth.apiKeyId,
-      apiKeyLabelSnapshot: auth.apiKeyLabel,
-      upstreamUrl,
-      consentHint: consentHint ?? undefined,
-      idempotencyKey: idempotencyKey ?? undefined,
-      approvalTtlMs: 2 * 60_000,
-    });
+    validatedUrl = validateUpstreamUrl(upstreamUrl);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return c.json({ error: "invalid_upstream_url", message: msg }, 400);
   }
+  const provider = getProxyProviderForUrl(validatedUrl);
+
+  const normalizedHeaders = normalizeHeaders(
+    provider.extraAllowedRequestHeaders,
+    headers
+  );
+  let bodyBase64: string | undefined;
+  let impliedContentType: string | undefined;
+  try {
+    const enc = encodeRequestBodyBase64({
+      method,
+      headers: normalizedHeaders,
+      body,
+    });
+    bodyBase64 = enc.bodyBase64;
+    impliedContentType = enc.contentType;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return c.json({ error: "invalid_request", message: msg }, 400);
+  }
+
+  // If body implies a content-type and the caller didn't specify one, set it.
+  if (impliedContentType && !normalizedHeaders["content-type"]) {
+    normalizedHeaders["content-type"] = impliedContentType;
+  }
+
+  const decodedForInterpret = decodeBodyForInterpret({
+    contentType: normalizedHeaders["content-type"],
+    bodyBase64,
+  });
+
+  const created = await createProxyRequest({
+    userId: auth.userId,
+    apiKeyId: auth.apiKeyId,
+    apiKeyLabelSnapshot: auth.apiKeyLabel,
+    upstreamUrl,
+    method,
+    headers: normalizedHeaders,
+    bodyBase64,
+    consentHint: consentHint ?? undefined,
+    idempotencyKey: idempotencyKey ?? undefined,
+    approvalTtlMs: 2 * 60_000,
+  });
 
   if (created.isNew) {
     auditEvent({
@@ -359,16 +592,25 @@ proxyRouter.post("/request", requireApiKey, async (c) => {
     const url = new URL(created.canonicalUpstreamUrl);
     const hashPrefix = created.requestHash.slice(0, 12);
 
-    const interpreted = interpretUpstreamUrl(url);
+    const interpreted = interpretProxyRequest({
+      url,
+      method,
+      headers: normalizedHeaders,
+      bodyJson: decodedForInterpret.bodyJson,
+      bodyText: decodedForInterpret.bodyText,
+    });
     const text = [
       `API key: ${auth.apiKeyLabel}`,
       `Action: ${interpreted.summary}`,
       ...interpreted.details.map((d) => `- ${d}`),
-      `Request: GET ${url.hostname}${url.pathname}`,
+      `Request: ${method} ${url.hostname}${url.pathname}`,
       url.search ? `Query: ${truncate(url.search, 300)}` : "Query: (none)",
       consentHint
         ? `Requester note (unverified): ${truncate(consentHint, 300)}`
         : "",
+      decodedForInterpret.bodySummary != null
+        ? `Body: ${truncate(decodedForInterpret.bodySummary, 500)}`
+        : "Body: (none)",
       "Approve to allow the agent to execute this request.",
       `Hash: ${hashPrefix}`,
     ]

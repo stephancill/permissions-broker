@@ -16,7 +16,14 @@ const nodeEnvDefault =
 
 const dbPathDefault =
   nodeEnvDefault === "test"
-    ? `./data/test-${process.pid}.sqlite3`
+    ? (() => {
+        const b = new Uint8Array(6);
+        crypto.getRandomValues(b);
+        const suffix = [...b]
+          .map((x) => x.toString(16).padStart(2, "0"))
+          .join("");
+        return `./data/test-${process.pid}-${suffix}.sqlite3`;
+      })()
     : "./data/dev.sqlite3";
 
 const testBypassOauthDefault = nodeEnvDefault === "test";
@@ -32,6 +39,8 @@ const EnvSchema = z.object({
   APP_SECRET: z.string().min(1).optional(),
   GOOGLE_OAUTH_CLIENT_ID: z.string().min(1).optional(),
   GOOGLE_OAUTH_CLIENT_SECRET: z.string().min(1).optional(),
+  GITHUB_OAUTH_CLIENT_ID: z.string().min(1).optional(),
+  GITHUB_OAUTH_CLIENT_SECRET: z.string().min(1).optional(),
   PB_TEST_BYPASS_OAUTH: z.coerce
     .boolean()
     .optional()

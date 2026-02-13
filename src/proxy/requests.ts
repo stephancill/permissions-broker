@@ -13,6 +13,10 @@ export async function createProxyRequest(params: {
   apiKeyId: string;
   apiKeyLabelSnapshot: string;
   upstreamUrl: string;
+  method: string;
+  headers?: Record<string, string>;
+  // Request body bytes, base64-encoded.
+  bodyBase64?: string;
   consentHint?: string;
   idempotencyKey?: string;
   approvalTtlMs: number;
@@ -26,7 +30,22 @@ export async function createProxyRequest(params: {
 }> {
   const url = validateUpstreamUrl(params.upstreamUrl);
   const canonicalUrl = canonicalizeUrl(url);
-  const canonicalPayload = JSON.stringify({ method: "GET", url: canonicalUrl });
+
+  const method = params.method.toUpperCase();
+  const headers = params.headers ?? {};
+  const headerPairs = Object.entries(headers).map(([k, v]) => [
+    k.toLowerCase(),
+    v,
+  ]);
+  headerPairs.sort((a, b) => a[0].localeCompare(b[0]));
+  const canonicalHeaders = Object.fromEntries(headerPairs);
+
+  const canonicalPayload = JSON.stringify({
+    method,
+    url: canonicalUrl,
+    headers: canonicalHeaders,
+    body_base64: params.bodyBase64 ?? null,
+  });
   const requestHash = await sha256Hex(canonicalPayload);
 
   if (params.idempotencyKey) {
@@ -62,8 +81,8 @@ export async function createProxyRequest(params: {
 
   db()
     .query(
-      "INSERT INTO proxy_requests (id, user_id, api_key_id, api_key_label_snapshot, upstream_url, request_hash, consent_hint, status, created_at, updated_at, approval_expires_at, idempotency_key, upstream_http_status, upstream_content_type, upstream_bytes, result_state, error_code, error_message) " +
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, 'NONE', NULL, NULL);"
+      "INSERT INTO proxy_requests (id, user_id, api_key_id, api_key_label_snapshot, upstream_url, method, request_headers_json, request_body_base64, request_hash, consent_hint, status, created_at, updated_at, approval_expires_at, idempotency_key, upstream_http_status, upstream_content_type, upstream_bytes, result_state, error_code, error_message) " +
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, 'NONE', NULL, NULL);"
     )
     .run(
       requestId,
@@ -71,6 +90,9 @@ export async function createProxyRequest(params: {
       params.apiKeyId,
       params.apiKeyLabelSnapshot,
       canonicalUrl,
+      method,
+      JSON.stringify(canonicalHeaders),
+      params.bodyBase64 ?? null,
       requestHash,
       params.consentHint ?? null,
       "PENDING_APPROVAL",

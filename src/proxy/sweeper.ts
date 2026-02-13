@@ -1,4 +1,5 @@
 import { db } from "../db/client";
+import { sweepGitSessions } from "../git/sweeper";
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -16,6 +17,7 @@ function sweepApprovalExpirations(): number {
 export async function startSweeperLoop(): Promise<void> {
   for (;;) {
     sweepApprovalExpirations();
+    sweepGitSessions();
     await new Promise((r) => setTimeout(r, 1000));
   }
 }

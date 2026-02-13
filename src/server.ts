@@ -3,6 +3,7 @@ import { migrate } from "./db/migrate";
 import { env } from "./env";
 
 import { accountRouter } from "./web/accounts";
+import { gitRouter } from "./web/git";
 import { proxyRouter } from "./web/proxy";
 import { whoamiRouter } from "./web/whoami";
 
@@ -32,6 +33,7 @@ app.get("/", (c) => c.text("ok"));
 app.get("/healthz", (c) => c.json({ ok: true }));
 
 app.route("/v1/accounts", accountRouter);
+app.route("/v1/git", gitRouter);
 app.route("/v1/proxy", proxyRouter);
 app.route("/v1", whoamiRouter);
 

@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
 
-import { interpretUpstreamUrl } from "../src/proxy/interpret";
+import {
+  interpretProxyRequest,
+  interpretUpstreamUrl,
+} from "../src/proxy/interpret";
 
 describe("interpretUpstreamUrl", () => {
   test("interprets Docs documents.get", () => {
@@ -18,5 +21,27 @@ describe("interpretUpstreamUrl", () => {
     );
     const out = interpretUpstreamUrl(url);
     expect(out.summary).toBe("List Drive files");
+  });
+});
+
+describe("interpretProxyRequest", () => {
+  test("interprets GitHub pull request creation", () => {
+    const url = new URL("https://api.github.com/repos/o/r/pulls");
+    const out = interpretProxyRequest({
+      url,
+      method: "POST",
+      bodyJson: { title: "t", head: "feat", base: "main" },
+    });
+    expect(out.summary).toBe("Create GitHub pull request");
+    expect(out.details.join("\n")).toContain("repo: o/r");
+  });
+
+  test("interprets Sheets spreadsheets.get", () => {
+    const url = new URL(
+      "https://sheets.googleapis.com/v4/spreadsheets/s123?fields=properties.title"
+    );
+    const out = interpretProxyRequest({ url, method: "GET" });
+    expect(out.summary).toBe("Read Google Sheet metadata");
+    expect(out.details.join("\n")).toContain("spreadsheetId: s123");
   });
 });
