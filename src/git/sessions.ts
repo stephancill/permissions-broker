@@ -9,7 +9,7 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
-export type GitOperation = "clone" | "push";
+export type GitOperation = "clone" | "fetch" | "pull" | "push";
 
 export type GitSessionRow = {
   id: string;

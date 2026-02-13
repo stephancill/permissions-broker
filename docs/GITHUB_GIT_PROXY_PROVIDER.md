@@ -46,7 +46,7 @@ Introduce an approved "git session".
 2. Broker sends a Telegram prompt.
 3. User approves once.
 4. Broker returns a session-scoped remote URL containing a short-lived secret.
-5. Agent runs `git clone`/`git push` against the broker remote URL.
+5. Agent runs `git clone`/`git fetch`/`git pull`/`git push` against the broker remote URL.
 6. Broker proxies Git smart HTTP requests to GitHub and enforces session policy.
 7. Session expires after a short inactivity window and/or short TTL.
    Note: Git protocol v2 may issue multiple `git-upload-pack` POSTs for a single
@@ -128,7 +128,7 @@ Rules:
 - Streaming proxy for POST bodies and responses.
 - Enforce request/response byte limits and timeouts.
 - Session expires after short inactivity.
-- For clone/fetch, allow multiple `git-upload-pack` POSTs within the session.
+- For clone/fetch/pull, allow multiple `git-upload-pack` POSTs within the session.
 - For push, the broker may mark the session used on the first
   `git-receive-pack` request.
 

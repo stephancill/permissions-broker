@@ -596,6 +596,13 @@ export function createBot(): Bot {
       const sessionId = ctx.match?.[2];
       const userId = ensureUser(ctx.from.id);
 
+      const sess = db()
+        .query(
+          "SELECT operation FROM git_sessions WHERE id = ? AND user_id = ? LIMIT 1;"
+        )
+        .get(sessionId, userId) as { operation: string } | null;
+      const operation = sess?.operation ?? "clone";
+
       const msg = ctx.callbackQuery.message;
       if (!msg || !("message_id" in msg)) {
         await ctx.answerCallbackQuery({ text: "Missing message" });
@@ -620,7 +627,7 @@ export function createBot(): Bot {
             actorType: "telegram",
             actorId: String(ctx.from.id),
             eventType: "git_session_approved",
-            event: { sessionId, operation: "clone" },
+            event: { sessionId, operation },
           });
           await ctx.answerCallbackQuery({ text: "approved" });
         } else if (action === "approve_push_block") {
@@ -637,7 +644,7 @@ export function createBot(): Bot {
             eventType: "git_session_approved",
             event: {
               sessionId,
-              operation: "push",
+              operation,
               allowDefaultBranchPush: false,
             },
           });
@@ -656,7 +663,7 @@ export function createBot(): Bot {
             eventType: "git_session_approved",
             event: {
               sessionId,
-              operation: "push",
+              operation,
               allowDefaultBranchPush: true,
             },
           });

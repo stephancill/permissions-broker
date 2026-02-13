@@ -28,10 +28,14 @@ import {
 import { telegramApi } from "../telegram/api";
 
 const CreateSessionSchema = z.object({
-  operation: z.enum(["clone", "push"]),
+  operation: z.enum(["clone", "fetch", "pull", "push"]),
   repo: z.string().min(3),
   consent_hint: z.string().optional(),
 });
+
+function isReadOperation(op: string): boolean {
+  return op === "clone" || op === "fetch" || op === "pull";
+}
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -176,8 +180,9 @@ gitRouter.post("/sessions", requireApiKey, async (c) => {
     lines.push(`Provider: github`);
     lines.push(`Repo: ${owner}/${name}`);
 
-    if (parsed.data.operation === "clone") {
-      lines.push("Operation: CLONE (git-upload-pack)");
+    if (isReadOperation(parsed.data.operation)) {
+      const op = parsed.data.operation.toUpperCase();
+      lines.push(`Operation: ${op} (git-upload-pack)`);
       if (!connected) {
         lines.push(
           "Note: no GitHub account linked; this will only work for public repos."
@@ -220,7 +225,7 @@ gitRouter.post("/sessions", requireApiKey, async (c) => {
             inline_keyboard: [
               [
                 {
-                  text: "Approve clone",
+                  text: `Approve ${parsed.data.operation}`,
                   callback_data: `gs:approve_clone:${created.sessionId}`,
                 },
                 { text: "Deny", callback_data: `gs:deny:${created.sessionId}` },
@@ -364,7 +369,7 @@ gitRouter.all("/session/:id/:secret/github/:owner/:repo/*", async (c) => {
       : null;
   if (path === "/info/refs") {
     if (!service) return c.text("missing service", 400);
-    if (sess.operation === "clone" && service !== "git-upload-pack") {
+    if (isReadOperation(sess.operation) && service !== "git-upload-pack") {
       return c.text("forbidden", 403);
     }
     if (sess.operation === "push" && service !== "git-receive-pack") {
@@ -372,7 +377,7 @@ gitRouter.all("/session/:id/:secret/github/:owner/:repo/*", async (c) => {
     }
   }
 
-  if (sess.operation === "clone" && path === "/git-receive-pack")
+  if (isReadOperation(sess.operation) && path === "/git-receive-pack")
     return c.text("forbidden", 403);
   if (sess.operation === "push" && path === "/git-upload-pack")
     return c.text("forbidden", 403);

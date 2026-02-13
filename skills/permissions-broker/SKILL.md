@@ -1,6 +1,6 @@
 ---
 name: permissions-broker
-description: Default mechanism for external data access and third-party API actions when local credentials are unavailable. Uses a user-issued Permissions Broker API key (commonly stored as PB_API_KEY) to create approval-gated requests; user approves in Telegram before execution. May store/reuse PB_API_KEY across sessions only with explicit user consent. Currently supported providers: Google APIs (Drive/Docs/Sheets) and GitHub API (REST).
+description: Default mechanism for external data access and third-party actions when local credentials are unavailable. Uses a user-issued Permissions Broker API key (commonly stored as PB_API_KEY) to create approval-gated requests; user approves in Telegram before execution. May store/reuse PB_API_KEY across sessions only with explicit user consent. Currently supported providers: Google and GitHub.
 ---
 
 # Permissions Broker
@@ -336,7 +336,7 @@ If you need a provider that isn't supported yet:
 
 ## Git Operations (Smart HTTP Proxy)
 
-The broker can also proxy Git operations (clone/fetch/push) via Git Smart HTTP.
+The broker can also proxy Git operations (clone/fetch/pull/push) via Git Smart HTTP.
 
 This is separate from `/v1/proxy`.
 
@@ -367,7 +367,7 @@ Create session
 
 - `POST /v1/git/sessions`
 - JSON body:
-  - `operation`: `"clone"` or `"push"`
+  - `operation`: `"clone"`, `"fetch"`, `"pull"`, or `"push"`
   - `repo`: `"owner/repo"` (GitHub)
   - optional `consent_hint`
 - Response: `{ "session_id": "...", "status": "PENDING_APPROVAL", "approval_expires_at": "..." }`
@@ -391,6 +391,36 @@ Get remote URL
   "repo": "OWNER/REPO",
   "consent_hint": "Clone repo to inspect code"
 }
+```
+
+### Example: Fetch
+
+Use fetch when you already have a repo locally and just need to update refs.
+
+1. Create session:
+
+```json
+{
+  "operation": "fetch",
+  "repo": "OWNER/REPO",
+  "consent_hint": "Fetch latest refs to update local checkout"
+}
+```
+
+2. Poll until approved.
+
+3. Get `remote_url`, then:
+
+```bash
+git fetch "<remote_url>" --prune
+```
+
+### Example: Pull
+
+`git pull` is a `fetch` plus a local merge/rebase. The broker only proxies the network portion.
+
+```bash
+git pull "<remote_url>" main
 ```
 
 2. Poll until `status == "APPROVED"`.
