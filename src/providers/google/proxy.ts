@@ -41,15 +41,11 @@ function interpretGoogle(
   if (host === "www.googleapis.com") {
     if (path === "/drive/v3/files") {
       const q = firstParam(url, "q");
-      const pageSize = firstParam(url, "pageSize");
-      const fields = firstParam(url, "fields");
+      const qNorm = q ? q.replace(/\s+/g, "").toLowerCase() : "";
       return {
         summary: "List Drive files",
-        details: [
-          pageSize ? `pageSize: ${truncate(pageSize, 50)}` : "",
-          q ? `q: ${truncate(q, 200)}` : "",
-          fields ? `fields: ${truncate(fields, 200)}` : "",
-        ].filter(Boolean),
+        details:
+          q && qNorm !== "trashed=false" ? [`filter: ${truncate(q, 200)}`] : [],
       };
     }
 

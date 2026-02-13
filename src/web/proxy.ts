@@ -175,6 +175,53 @@ function truncate(s: string, max: number): string {
   return `${s.slice(0, max - 1)}…`;
 }
 
+function escapeHtml(s: string): string {
+  return s
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function formatQueryForTelegram(url: URL): string {
+  if (!url.search) return "";
+
+  const pairs = [...url.searchParams.entries()];
+  if (pairs.length === 0) return "";
+
+  // Drop noisy/default params. If nothing meaningful remains, omit the query block.
+  const dropKeys = new Set([
+    "fields",
+    "pagesize",
+    "prettyprint",
+    "alt",
+    "key",
+    "quotauser",
+  ]);
+
+  const filtered = pairs.filter(([k, v]) => {
+    const kk = k.toLowerCase();
+    if (dropKeys.has(kk)) return false;
+    if (kk === "q") {
+      const norm = v.replace(/\s+/g, "").toLowerCase();
+      if (norm === "trashed=false") return false;
+    }
+    return true;
+  });
+
+  if (filtered.length === 0) return "";
+
+  filtered.sort((a, b) =>
+    a[0] === b[0] ? a[1].localeCompare(b[1]) : a[0].localeCompare(b[0])
+  );
+
+  const lines = filtered.map(([k, v]) => `${k}=${truncate(v, 200)}`);
+
+  const rendered = truncate(lines.join("\n"), 600);
+  return `<b>Query</b>:\n<pre>${escapeHtml(rendered)}</pre>`;
+}
+
 export const proxyRouter = new Hono();
 
 proxyRouter.get("/requests/:id", requireApiKey, (c) => {
@@ -590,7 +637,6 @@ proxyRouter.post("/request", requireApiKey, async (c) => {
 
   if (created.isNew && u?.telegram_user_id && env.TELEGRAM_BOT_TOKEN) {
     const url = new URL(created.canonicalUpstreamUrl);
-    const hashPrefix = created.requestHash.slice(0, 12);
 
     const interpreted = interpretProxyRequest({
       url,
@@ -599,20 +645,29 @@ proxyRouter.post("/request", requireApiKey, async (c) => {
       bodyJson: decodedForInterpret.bodyJson,
       bodyText: decodedForInterpret.bodyText,
     });
+
+    const queryLine =
+      interpreted.details.length === 0 ? formatQueryForTelegram(url) : "";
+
+    const requesterNote = consentHint
+      ? `<b>Requester note</b>: ${escapeHtml(truncate(consentHint, 300))}`
+      : "";
+
     const text = [
-      `API key: ${auth.apiKeyLabel}`,
-      `Action: ${interpreted.summary}`,
-      ...interpreted.details.map((d) => `- ${d}`),
-      `Request: ${method} ${url.hostname}${url.pathname}`,
-      url.search ? `Query: ${truncate(url.search, 300)}` : "Query: (none)",
-      consentHint
-        ? `Requester note (unverified): ${truncate(consentHint, 300)}`
-        : "",
+      "<b>Permission request</b>",
+      "",
+      `<b>API key</b>: <code>${escapeHtml(auth.apiKeyLabel)}</code>`,
+      `<b>Action</b>: ${escapeHtml(interpreted.summary)}`,
+      ...interpreted.details.map((d: string) => `- ${escapeHtml(d)}`),
+      "",
+      `<b>Request</b>: <code>${escapeHtml(`${method} ${url.hostname}${url.pathname}`)}</code>`,
+      queryLine,
       decodedForInterpret.bodySummary != null
-        ? `Body: ${truncate(decodedForInterpret.bodySummary, 500)}`
-        : "Body: (none)",
+        ? `<b>Body</b>: <pre>${escapeHtml(truncate(decodedForInterpret.bodySummary, 500))}</pre>`
+        : "",
+      "",
       "Approve to allow the agent to execute this request.",
-      `Hash: ${hashPrefix}`,
+      ...(requesterNote ? ["", requesterNote] : []),
     ]
       .filter(Boolean)
       .join("\n");
@@ -627,7 +682,10 @@ proxyRouter.post("/request", requireApiKey, async (c) => {
     };
 
     telegramApi()
-      .sendMessage(u.telegram_user_id, text, { reply_markup: kb })
+      .sendMessage(u.telegram_user_id, text, {
+        reply_markup: kb,
+        parse_mode: "HTML",
+      })
       .catch(() => {});
   }
 

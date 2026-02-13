@@ -41,6 +41,20 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
+function truncate(s: string, max: number): string {
+  if (s.length <= max) return s;
+  return `${s.slice(0, max - 1)}…`;
+}
+
+function escapeHtml(s: string): string {
+  return s
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
 function parseRepo(repo: string): { owner: string; name: string } {
   const trimmed = repo.trim();
   const parts = trimmed.split("/");
@@ -176,30 +190,29 @@ gitRouter.post("/sessions", requireApiKey, async (c) => {
   if (u?.telegram_user_id && env.TELEGRAM_BOT_TOKEN) {
     const consentHint = parsed.data.consent_hint;
     const lines: string[] = [];
-    lines.push(`API key: ${auth.apiKeyLabel}`);
-    lines.push(`Provider: github`);
-    lines.push(`Repo: ${owner}/${name}`);
+    lines.push("<b>Git session request</b>");
+    lines.push("");
+    lines.push(`<b>API key</b>: <code>${escapeHtml(auth.apiKeyLabel)}</code>`);
+    lines.push(`<b>Provider</b>: <code>github</code>`);
+    lines.push(`<b>Repo</b>: <code>${escapeHtml(`${owner}/${name}`)}</code>`);
 
     if (isReadOperation(parsed.data.operation)) {
       const op = parsed.data.operation.toUpperCase();
-      lines.push(`Operation: ${op} (git-upload-pack)`);
+      lines.push(`<b>Operation</b>: <code>${escapeHtml(op)}</code> (read)`);
       if (!connected) {
         lines.push(
-          "Note: no GitHub account linked; this will only work for public repos."
+          "<i>Note:</i> no GitHub account linked; this will only work for public repos."
         );
       }
     } else {
-      lines.push("Operation: PUSH (git-receive-pack)");
-      lines.push("Warnings:");
-      lines.push("- Deletions are not allowed");
-      lines.push("- Tag pushes are not allowed");
-      lines.push(
-        "- Default branch pushes are blocked unless explicitly allowed"
-      );
+      lines.push("<b>Operation</b>: <code>PUSH</code> (write)");
     }
 
     if (consentHint) {
-      lines.push(`Requester note (unverified): ${consentHint}`);
+      lines.push("");
+      lines.push(
+        `<b>Requester note</b>: ${escapeHtml(truncate(consentHint, 300))}`
+      );
     }
 
     const kb =
@@ -234,7 +247,10 @@ gitRouter.post("/sessions", requireApiKey, async (c) => {
           };
 
     telegramApi()
-      .sendMessage(u.telegram_user_id, lines.join("\n"), { reply_markup: kb })
+      .sendMessage(u.telegram_user_id, lines.join("\n"), {
+        reply_markup: kb,
+        parse_mode: "HTML",
+      })
       .catch(() => {});
   }
 

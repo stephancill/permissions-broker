@@ -188,7 +188,16 @@ function renderApprovalDecisionText(params: {
   decision: "approved" | "denied";
 }): string {
   const label = params.decision === "approved" ? "APPROVED" : "DENIED";
-  return `${params.originalText}\n\nDecision: ${label} (${nowIso()})`;
+
+  // The original message may contain characters that should be escaped when
+  // using parse_mode=HTML.
+  const original = escapeHtml(params.originalText);
+  return `${original}\n\n<b>Decision</b>: <code>${label}</code> (<code>${escapeHtml(nowIso())}</code>)`;
+}
+
+function renderExpiredDecisionText(originalText: string): string {
+  const original = escapeHtml(originalText);
+  return `${original}\n\n<b>Decision</b>: <code>EXPIRED</code> (<code>${escapeHtml(nowIso())}</code>)`;
 }
 
 function escapeHtml(s: string): string {
@@ -547,9 +556,9 @@ export function createBot(): Bot {
       if (res.reason === "expired") {
         try {
           if ("text" in msg && typeof msg.text === "string") {
-            await ctx.editMessageText(
-              `${msg.text}\n\nDecision: EXPIRED (${nowIso()})`
-            );
+            await ctx.editMessageText(renderExpiredDecisionText(msg.text), {
+              parse_mode: "HTML",
+            });
           }
           await ctx.editMessageReplyMarkup({
             reply_markup: new InlineKeyboard(),
@@ -579,7 +588,8 @@ export function createBot(): Bot {
     try {
       if ("text" in msg && typeof msg.text === "string") {
         await ctx.editMessageText(
-          renderApprovalDecisionText({ originalText: msg.text, decision })
+          renderApprovalDecisionText({ originalText: msg.text, decision }),
+          { parse_mode: "HTML" }
         );
       }
       await ctx.editMessageReplyMarkup({ reply_markup: new InlineKeyboard() });
@@ -674,7 +684,8 @@ export function createBot(): Bot {
           if ("text" in msg && typeof msg.text === "string") {
             const decision = action === "deny" ? "DENIED" : "APPROVED";
             await ctx.editMessageText(
-              `${msg.text}\n\nDecision: ${decision} (${nowIso()})`
+              `${escapeHtml(msg.text)}\n\n<b>Decision</b>: <code>${escapeHtml(decision)}</code> (<code>${escapeHtml(nowIso())}</code>)`,
+              { parse_mode: "HTML" }
             );
           }
           await ctx.editMessageReplyMarkup({
