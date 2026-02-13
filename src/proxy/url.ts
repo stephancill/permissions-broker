@@ -1,5 +1,3 @@
-import { getProxyProviderForUrl } from "./providerRegistry";
-
 export function validateUpstreamUrl(input: string): URL {
   let url: URL;
   try {
@@ -9,8 +7,6 @@ export function validateUpstreamUrl(input: string): URL {
   }
 
   if (url.protocol !== "https:") throw new Error("upstream_url must be https");
-  // Enforce allowlist by proxy provider.
-  getProxyProviderForUrl(url);
   if (url.username || url.password)
     throw new Error("upstream_url must not include credentials");
   return url;

@@ -8,8 +8,9 @@ Telegram-controlled permissions gate + proxy API for third-party providers.
 
 Current providers:
 
-- Google APIs (Drive/Docs/Sheets)
-- GitHub API (REST)
+- Google (Drive/Docs/Sheets)
+- GitHub
+- iCloud (CalDAV)
 
 Docs
 

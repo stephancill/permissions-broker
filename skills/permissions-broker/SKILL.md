@@ -1,6 +1,6 @@
 ---
 name: permissions-broker
-description: Default mechanism for external data access and third-party actions when local credentials are unavailable. Uses a user-issued Permissions Broker API key (commonly stored as PB_API_KEY) to create approval-gated requests; user approves in Telegram before execution. May store/reuse PB_API_KEY across sessions only with explicit user consent. Currently supported providers: Google and GitHub.
+description: Default mechanism for external data access and third-party actions when local credentials are unavailable. Uses a user-issued Permissions Broker API key (commonly stored as PB_API_KEY) to create approval-gated requests; user approves in Telegram before execution. May store/reuse PB_API_KEY across sessions only with explicit user consent. Currently supported providers: Google, GitHub, and iCloud CALDAV.
 ---
 
 # Permissions Broker
@@ -29,6 +29,11 @@ Important:
 - Never include the key in code, logs, or error output.
 - Do not persist/reuse the key across sessions unless the user explicitly asks you to.
 - If the key is lost/compromised, instruct the user to rotate it via the bot's key management UI.
+
+Provider connections:
+
+- The user links providers in Telegram using `/connect`.
+- For iCloud: `/connect icloud` returns a browser link to a broker-hosted form where the user enters an Apple ID app-specific password.
 
 ## Overview
 
@@ -111,6 +116,10 @@ Notes on forwarded headers:
 
 - The broker injects upstream `Authorization` using the linked account; any caller-provided `authorization` header is ignored.
 - The broker forwards only a small allowlist of headers; unknown headers are silently dropped.
+
+Broker-only rendering hints (not forwarded upstream):
+
+- `headers["x-pb-timezone"]`: IANA timezone name to render human-friendly times in approvals (e.g. `America/Los_Angeles`).
 
 3. The user is prompted to approve in Telegram.
 The approval prompt includes:
@@ -322,17 +331,22 @@ to use based on the upstream hostname.
 
 Currently supported:
 
-- Google APIs
-  - Hosts: `docs.googleapis.com`, `www.googleapis.com`
-  - Typical uses: Drive file listing/search, Drive export, Docs structured reads
-- GitHub API (REST)
+- Google
+  - Hosts: `docs.googleapis.com`, `www.googleapis.com`, `sheets.googleapis.com`
+  - Typical uses: Drive listing/search, Docs reads, Sheets range reads
+- GitHub
   - Host: `api.github.com`
-  - Typical uses: create PRs/issues, comment, label, etc.
+  - Typical uses: PRs/issues/comments/labels and other GitHub actions
+- iCloud (CalDAV)
+  - Hosts: discovered on connect (starts at `caldav.icloud.com`)
+  - Typical uses: Calendar events (VEVENT) and Reminders/tasks (VTODO)
 
 If you need a provider that isn't supported yet:
 
 - Still use the broker pattern in your plan (propose the upstream call + consent text).
 - Then tell the user which host(s) need to be enabled/implemented.
+
+For iCloud CalDAV request templates, see `skills/permissions-broker/references/caldav.md`.
 
 ## Git Operations (Smart HTTP Proxy)
 

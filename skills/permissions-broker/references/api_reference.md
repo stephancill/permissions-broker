@@ -17,10 +17,13 @@ Create request
 - JSON body:
   - `upstream_url` (required): full https URL targeting an allowed upstream host
   - `method` (optional, default `GET`): `GET` | `POST` | `PUT` | `PATCH` | `DELETE`
+    - For iCloud CalDAV, WebDAV methods like `PROPFIND` and `REPORT` are supported.
   - `headers` (optional): forwarded upstream request headers
     - `authorization` is always ignored; the broker injects an OAuth bearer token from the linked account
     - typical safe keys: `accept`, `content-type`, `if-match`, `if-none-match`
     - GitHub-specific: `x-github-api-version`
+    - Broker-only (not forwarded upstream):
+      - `x-pb-timezone`: rendering hint for human-readable approvals (e.g. `America/Los_Angeles`)
   - `body` (optional): request body
     - interpretability comes from `headers.content-type`
     - JSON (`application/json` or `+json`): `body` can be an object/array OR a JSON string
@@ -72,6 +75,7 @@ Connected services
     - `scopes`
     - `status`
     - other non-secret metadata
+    - for iCloud, the broker may include CalDAV discovery bounds (hostnames + path prefixes) to help agents form valid requests
 
 ## Upstream URL Rules (MVP)
 
@@ -79,11 +83,19 @@ Connected services
 - Allowed hosts:
   - Google: `www.googleapis.com`, `docs.googleapis.com`, `sheets.googleapis.com`
   - GitHub: `api.github.com`
+  - iCloud (CalDAV): discovered on connect (starts at `caldav.icloud.com`)
 
 Provider selection
 
 - The broker infers which linked account to use from `upstream_url.hostname`.
 - If no linked account exists for that provider, execution fails with `NO_LINKED_ACCOUNT`.
+
+iCloud allowlisting
+
+- For iCloud CalDAV, the broker enforces a strict per-user allowlist derived during connect:
+  - allowed hostnames (e.g. `pXX-caldav.icloud.com`)
+  - allowed path prefixes (principal + home-set)
+- Requests outside that scope are rejected.
 
 Practical guidance
 

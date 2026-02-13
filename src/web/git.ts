@@ -213,7 +213,10 @@ gitRouter.post("/sessions", requireApiKey, async (c) => {
       lines.push(
         `<b>Requester note</b>: ${escapeHtml(truncate(consentHint, 300))}`
       );
+      lines.push("");
     }
+
+    lines.push("Approve to allow the agent to use this git session.");
 
     const kb =
       parsed.data.operation === "push"

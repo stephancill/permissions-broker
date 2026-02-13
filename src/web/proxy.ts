@@ -7,6 +7,7 @@ import { decryptUtf8 } from "../crypto/aesgcm";
 import { db } from "../db/client";
 import { env } from "../env";
 import { interpretProxyRequest } from "../proxy/interpret";
+import type { ProxyProvider } from "../proxy/provider";
 import { getProxyProviderForUrl } from "../proxy/providerRegistry";
 import { readBodyWithLimit } from "../proxy/readLimit";
 import { createProxyRequest } from "../proxy/requests";
@@ -15,10 +16,7 @@ import { telegramApi } from "../telegram/api";
 
 const CreateProxyRequestSchema = z.object({
   upstream_url: z.string().min(1),
-  method: z
-    .enum(["GET", "POST", "PUT", "PATCH", "DELETE"])
-    .optional()
-    .default("GET"),
+  method: z.string().optional().default("GET"),
   headers: z.record(z.string(), z.string()).optional(),
   body: z.unknown().optional(),
   consent_hint: z.string().optional(),
@@ -182,6 +180,113 @@ function escapeHtml(s: string): string {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
+}
+
+async function fetchWithAllowedRedirects(params: {
+  url: string;
+  init: RequestInit;
+  maxRedirects: number;
+  provider: ProxyProvider;
+  userId: string;
+  storedCredential: string;
+}): Promise<Response> {
+  let current = new URL(params.url);
+
+  for (let i = 0; i <= params.maxRedirects; i++) {
+    const res = await fetch(current.toString(), {
+      ...params.init,
+      redirect: "manual",
+    });
+
+    if (
+      res.status === 301 ||
+      res.status === 302 ||
+      res.status === 303 ||
+      res.status === 307 ||
+      res.status === 308
+    ) {
+      const loc = res.headers.get("location");
+      if (!loc) return res;
+      const next = new URL(loc, current);
+      if (next.protocol !== "https:") throw new Error("redirect to non-https");
+
+      const allow = await params.provider.isAllowedUpstreamUrl({
+        userId: params.userId,
+        url: next,
+        storedCredential: params.storedCredential,
+      });
+      if (!allow.allowed) {
+        throw new Error("redirect disallowed");
+      }
+
+      current = next;
+      continue;
+    }
+
+    return res;
+  }
+
+  throw new Error("too many redirects");
+}
+
+async function maybeLookupIcloudCollectionDisplayName(params: {
+  objectUrl: URL;
+  provider: ProxyProvider;
+  userId: string;
+  storedCredential: string;
+}): Promise<string | null> {
+  const collectionUrl = new URL(params.objectUrl.toString());
+  collectionUrl.pathname = collectionUrl.pathname.replace(/[^/]+$/, "");
+  if (!collectionUrl.pathname.endsWith("/")) {
+    collectionUrl.pathname = `${collectionUrl.pathname}/`;
+  }
+
+  const allow = await params.provider.isAllowedUpstreamUrl({
+    userId: params.userId,
+    url: collectionUrl,
+    storedCredential: params.storedCredential,
+  });
+  if (!allow.allowed) return null;
+
+  const authorization = await params.provider.getAuthorizationHeaderValue({
+    storedCredential: params.storedCredential,
+  });
+
+  const headers = new Headers();
+  headers.set("authorization", authorization);
+  headers.set("depth", "0");
+  headers.set("content-type", "application/xml; charset=utf-8");
+  headers.set("accept", "application/xml, text/xml");
+
+  const body = `<?xml version="1.0" encoding="UTF-8"?>\n<D:propfind xmlns:D="DAV:">\n  <D:prop>\n    <D:displayname />\n  </D:prop>\n</D:propfind>\n`;
+
+  const ctrl = new AbortController();
+  const timeout = setTimeout(() => ctrl.abort(), 10_000);
+  try {
+    const res = await fetchWithAllowedRedirects({
+      url: collectionUrl.toString(),
+      init: {
+        method: "PROPFIND",
+        headers,
+        body,
+        signal: ctrl.signal,
+      },
+      maxRedirects: 5,
+      provider: params.provider,
+      userId: params.userId,
+      storedCredential: params.storedCredential,
+    });
+
+    if (res.status !== 207 && res.status !== 200) return null;
+    const text = await res.text();
+    const m = text.match(/<[^>]*displayname[^>]*>([^<]*)<\/[^>]*displayname>/i);
+    const name = m?.[1]?.trim();
+    return name || null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function formatQueryForTelegram(url: URL): string {
@@ -450,10 +555,34 @@ proxyRouter.post("/requests/:id/execute", requireApiKey, async (c) => {
       return c.json({ error: "server_misconfigured", request_id: row.id }, 500);
     }
 
-    const storedToken = await decryptUtf8(acct.refresh_token_ciphertext);
+    const storedCredential = await decryptUtf8(acct.refresh_token_ciphertext);
 
-    const accessToken = await provider.getAccessToken({
-      storedToken,
+    const method = (row.method || "GET").toUpperCase();
+    if (!provider.allowedMethods.has(method)) {
+      db()
+        .query(
+          "UPDATE proxy_requests SET status = 'FAILED', updated_at = ?, error_code = 'METHOD_NOT_ALLOWED' WHERE id = ?;"
+        )
+        .run(new Date().toISOString(), row.id);
+      return c.json({ error: "invalid_request", request_id: row.id }, 400);
+    }
+
+    const allow = await provider.isAllowedUpstreamUrl({
+      userId: auth.userId,
+      url,
+      storedCredential,
+    });
+    if (!allow.allowed) {
+      db()
+        .query(
+          "UPDATE proxy_requests SET status = 'FAILED', updated_at = ?, error_code = 'DISALLOWED_UPSTREAM_URL', error_message = ? WHERE id = ?;"
+        )
+        .run(new Date().toISOString(), allow.message ?? null, row.id);
+      return c.json({ error: "invalid_upstream_url", request_id: row.id }, 400);
+    }
+
+    const authorization = await provider.getAuthorizationHeaderValue({
+      storedCredential,
     });
 
     let reqHeaders: Record<string, string> = {};
@@ -471,15 +600,17 @@ proxyRouter.post("/requests/:id/execute", requireApiKey, async (c) => {
     // Never allow caller-provided Authorization.
     delete (reqHeaders as Record<string, string>).authorization;
 
+    // Internal broker hints (not forwarded upstream).
+    delete (reqHeaders as Record<string, string>)["x-pb-timezone"];
+
     provider.applyUpstreamRequestHeaderDefaults({ headers: reqHeaders });
 
     const upstreamHeaders = new Headers();
     for (const [k, v] of Object.entries(reqHeaders)) {
       upstreamHeaders.set(k, v);
     }
-    upstreamHeaders.set("authorization", `Bearer ${accessToken}`);
+    upstreamHeaders.set("authorization", authorization);
 
-    const method = (row.method || "GET").toUpperCase();
     const bodyBytes = row.request_body_base64
       ? Buffer.from(row.request_body_base64, "base64")
       : null;
@@ -488,11 +619,18 @@ proxyRouter.post("/requests/:id/execute", requireApiKey, async (c) => {
     const timeout = setTimeout(() => ctrl.abort(), 60_000);
     let res: Response;
     try {
-      res = await fetch(row.upstream_url, {
-        method,
-        headers: upstreamHeaders,
-        body: bodyBytes,
-        signal: ctrl.signal,
+      res = await fetchWithAllowedRedirects({
+        url: row.upstream_url,
+        init: {
+          method,
+          headers: upstreamHeaders,
+          body: bodyBytes,
+          signal: ctrl.signal,
+        },
+        maxRedirects: 5,
+        provider,
+        userId: auth.userId,
+        storedCredential,
       });
     } finally {
       clearTimeout(timeout);
@@ -573,7 +711,65 @@ proxyRouter.post("/request", requireApiKey, async (c) => {
     const msg = err instanceof Error ? err.message : String(err);
     return c.json({ error: "invalid_upstream_url", message: msg }, 400);
   }
-  const provider = getProxyProviderForUrl(validatedUrl);
+
+  let provider: ReturnType<typeof getProxyProviderForUrl>;
+  try {
+    provider = getProxyProviderForUrl(validatedUrl);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return c.json({ error: "invalid_upstream_url", message: msg }, 400);
+  }
+
+  const methodNorm = method.trim().toUpperCase();
+  if (!/^[A-Z]+$/.test(methodNorm) || methodNorm.length > 20) {
+    return c.json({ error: "invalid_request", message: "invalid method" }, 400);
+  }
+  if (!provider.allowedMethods.has(methodNorm)) {
+    return c.json(
+      {
+        error: "invalid_request",
+        message: `method not allowed for provider: ${provider.id}`,
+      },
+      400
+    );
+  }
+
+  let storedCredentialForValidation: string | undefined;
+  if (provider.id === "icloud") {
+    if (!env.APP_SECRET) {
+      return c.json({ error: "server_misconfigured" }, 500);
+    }
+
+    const acct = db()
+      .query(
+        "SELECT refresh_token_ciphertext FROM linked_accounts WHERE user_id = ? AND provider = ? AND status = 'active' LIMIT 1;"
+      )
+      .get(auth.userId, provider.id) as {
+      refresh_token_ciphertext: Uint8Array;
+    } | null;
+    if (!acct) {
+      return c.json({ error: "no_linked_account", provider: provider.id }, 409);
+    }
+
+    storedCredentialForValidation = await decryptUtf8(
+      acct.refresh_token_ciphertext
+    );
+  }
+
+  const allow = await provider.isAllowedUpstreamUrl({
+    userId: auth.userId,
+    url: validatedUrl,
+    storedCredential: storedCredentialForValidation,
+  });
+  if (!allow.allowed) {
+    return c.json(
+      {
+        error: "invalid_upstream_url",
+        message: allow.message ?? "disallowed upstream url",
+      },
+      400
+    );
+  }
 
   const normalizedHeaders = normalizeHeaders(
     provider.extraAllowedRequestHeaders,
@@ -583,7 +779,7 @@ proxyRouter.post("/request", requireApiKey, async (c) => {
   let impliedContentType: string | undefined;
   try {
     const enc = encodeRequestBodyBase64({
-      method,
+      method: methodNorm,
       headers: normalizedHeaders,
       body,
     });
@@ -609,7 +805,7 @@ proxyRouter.post("/request", requireApiKey, async (c) => {
     apiKeyId: auth.apiKeyId,
     apiKeyLabelSnapshot: auth.apiKeyLabel,
     upstreamUrl,
-    method,
+    method: methodNorm,
     headers: normalizedHeaders,
     bodyBase64,
     consentHint: consentHint ?? undefined,
@@ -640,17 +836,62 @@ proxyRouter.post("/request", requireApiKey, async (c) => {
 
     const interpreted = interpretProxyRequest({
       url,
-      method,
+      method: methodNorm,
       headers: normalizedHeaders,
       bodyJson: decodedForInterpret.bodyJson,
       bodyText: decodedForInterpret.bodyText,
+      storedCredential:
+        provider.id === "icloud" ? storedCredentialForValidation : undefined,
     });
 
+    let detailsForTelegram = interpreted.details;
+
+    // iCloud: enrich PUT approvals with a just-in-time collection name.
+    // This does an upstream PROPFIND (Depth: 0) to fetch the collection displayname.
+    if (
+      provider.id === "icloud" &&
+      storedCredentialForValidation &&
+      methodNorm === "PUT" &&
+      interpreted.details.length
+    ) {
+      const name = await maybeLookupIcloudCollectionDisplayName({
+        objectUrl: url,
+        provider,
+        userId: auth.userId,
+        storedCredential: storedCredentialForValidation,
+      });
+      if (name) {
+        const details = [...interpreted.details];
+        const kindIdx = details.findIndex((d) => d.startsWith("kind: "));
+        if (kindIdx !== -1) {
+          const kind = details[kindIdx].slice("kind: ".length).trim();
+          const label =
+            kind === "Event"
+              ? "calendar"
+              : kind === "Reminder"
+                ? "list"
+                : "collection";
+          // Insert after kind line.
+          details.splice(kindIdx + 1, 0, `${label}: ${name}`);
+          detailsForTelegram = details;
+        } else {
+          detailsForTelegram = [`collection: ${name}`, ...details];
+        }
+      }
+    }
+
     const queryLine =
-      interpreted.details.length === 0 ? formatQueryForTelegram(url) : "";
+      detailsForTelegram.length === 0 ? formatQueryForTelegram(url) : "";
 
     const requesterNote = consentHint
       ? `<b>Requester note</b>: ${escapeHtml(truncate(consentHint, 300))}`
+      : "";
+
+    const detailsBlock = detailsForTelegram.length
+      ? [
+          "<b>Details</b>:",
+          ...detailsForTelegram.map((d) => `- ${escapeHtml(d)}`),
+        ].join("\n")
       : "";
 
     const text = [
@@ -658,16 +899,16 @@ proxyRouter.post("/request", requireApiKey, async (c) => {
       "",
       `<b>API key</b>: <code>${escapeHtml(auth.apiKeyLabel)}</code>`,
       `<b>Action</b>: ${escapeHtml(interpreted.summary)}`,
-      ...interpreted.details.map((d: string) => `- ${escapeHtml(d)}`),
+      detailsBlock,
       "",
-      `<b>Request</b>: <code>${escapeHtml(`${method} ${url.hostname}${url.pathname}`)}</code>`,
+      `<b>Request</b>: <code>${escapeHtml(`${methodNorm} ${url.hostname}${url.pathname}`)}</code>`,
       queryLine,
-      decodedForInterpret.bodySummary != null
+      decodedForInterpret.bodySummary != null && detailsForTelegram.length === 0
         ? `<b>Body</b>: <pre>${escapeHtml(truncate(decodedForInterpret.bodySummary, 500))}</pre>`
         : "",
       "",
+      ...(requesterNote ? ["", requesterNote, ""] : []),
       "Approve to allow the agent to execute this request.",
-      ...(requesterNote ? ["", requesterNote] : []),
     ]
       .filter(Boolean)
       .join("\n");

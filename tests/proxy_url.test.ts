@@ -22,14 +22,20 @@ describe("validateUpstreamUrl", () => {
     expect(url.hostname).toBe("sheets.googleapis.com");
   });
 
+  test("accepts caldav.icloud.com", () => {
+    const url = validateUpstreamUrl("https://caldav.icloud.com/");
+    expect(url.hostname).toBe("caldav.icloud.com");
+  });
+
   test("rejects non-https", () => {
     expect(() =>
       validateUpstreamUrl("http://docs.googleapis.com/v1/documents/abc")
     ).toThrow();
   });
 
-  test("rejects disallowed hosts", () => {
-    expect(() => validateUpstreamUrl("https://example.com/")).toThrow();
+  test("accepts arbitrary https hosts (provider validation happens elsewhere)", () => {
+    const url = validateUpstreamUrl("https://example.com/");
+    expect(url.hostname).toBe("example.com");
   });
 
   test("rejects embedded credentials", () => {

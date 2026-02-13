@@ -68,12 +68,29 @@ function interpretGitHub(
 
 export const githubProxyProvider: ProxyProvider = {
   id: "github",
-  allowedHosts: new Set(["api.github.com"]),
+  matchesUrl(url: URL): boolean {
+    return url.hostname === "api.github.com";
+  },
+
+  async isAllowedUpstreamUrl(params: {
+    userId: string;
+    url: URL;
+    storedCredential?: string;
+  }): Promise<{ allowed: boolean; message?: string }> {
+    return params.url.hostname === "api.github.com"
+      ? { allowed: true }
+      : { allowed: false };
+  },
+
+  allowedMethods: new Set(["GET", "POST", "PUT", "PATCH", "DELETE"]),
+
   extraAllowedRequestHeaders: new Set(["x-github-api-version"]),
 
-  async getAccessToken(params: { storedToken: string }): Promise<string> {
+  async getAuthorizationHeaderValue(params: {
+    storedCredential: string;
+  }): Promise<string> {
     // GitHub OAuth (classic app): treat stored token as an access token.
-    return params.storedToken;
+    return `Bearer ${params.storedCredential}`;
   },
 
   applyUpstreamRequestHeaderDefaults(params: {

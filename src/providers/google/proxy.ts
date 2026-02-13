@@ -117,19 +117,38 @@ function interpretGoogle(
 
 export const googleProxyProvider: ProxyProvider = {
   id: "google",
-  allowedHosts: new Set([
-    "docs.googleapis.com",
-    "www.googleapis.com",
-    "sheets.googleapis.com",
-  ]),
+  matchesUrl(url: URL): boolean {
+    return (
+      url.hostname === "docs.googleapis.com" ||
+      url.hostname === "www.googleapis.com" ||
+      url.hostname === "sheets.googleapis.com"
+    );
+  },
+
+  async isAllowedUpstreamUrl(params: {
+    userId: string;
+    url: URL;
+    storedCredential?: string;
+  }): Promise<{ allowed: boolean; message?: string }> {
+    const host = params.url.hostname;
+    const allowed =
+      host === "docs.googleapis.com" ||
+      host === "www.googleapis.com" ||
+      host === "sheets.googleapis.com";
+    return allowed ? { allowed: true } : { allowed: false };
+  },
+
+  allowedMethods: new Set(["GET", "POST", "PUT", "PATCH", "DELETE"]),
   extraAllowedRequestHeaders: new Set([]),
 
-  async getAccessToken(params: { storedToken: string }): Promise<string> {
+  async getAuthorizationHeaderValue(params: {
+    storedCredential: string;
+  }): Promise<string> {
     const token = await refreshAccessToken({
       provider: googleProvider(),
-      refreshToken: params.storedToken,
+      refreshToken: params.storedCredential,
     });
-    return token.access_token;
+    return `Bearer ${token.access_token}`;
   },
 
   applyUpstreamRequestHeaderDefaults(): void {

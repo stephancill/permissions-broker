@@ -44,4 +44,50 @@ describe("interpretProxyRequest", () => {
     expect(out.summary).toBe("Read Google Sheet metadata");
     expect(out.details.join("\n")).toContain("spreadsheetId: s123");
   });
+
+  test("interprets iCloud REPORT time-range", () => {
+    const url = new URL("https://caldav.icloud.com/123/calendars/abc/");
+    const body = `<?xml version="1.0" encoding="UTF-8"?>
+<C:calendar-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
+  <D:prop>
+    <D:getetag />
+    <C:calendar-data />
+  </D:prop>
+  <C:filter>
+    <C:comp-filter name="VCALENDAR">
+      <C:comp-filter name="VEVENT">
+        <C:time-range start="20260213T000000Z" end="20260220T000000Z" />
+      </C:comp-filter>
+    </C:comp-filter>
+  </C:filter>
+</C:calendar-query>`;
+
+    const out = interpretProxyRequest({
+      url,
+      method: "REPORT",
+      headers: { "content-type": "application/xml", depth: "1" },
+      bodyText: body,
+    });
+    expect(out.summary).toBe("Query iCloud CalDAV data");
+    expect(out.details.join("\n")).toContain("components:");
+    expect(out.details.join("\n")).toContain("time-range:");
+  });
+
+  test("interprets iCloud PUT VEVENT", () => {
+    const url = new URL(
+      "https://caldav.icloud.com/123/calendars/abc/uid123.ics"
+    );
+    const ics = `BEGIN:VCALENDAR\nBEGIN:VEVENT\nUID:uid123\nSUMMARY:Hello\nDTSTART:20260213T100000Z\nDTEND:20260213T103000Z\nEND:VEVENT\nEND:VCALENDAR\n`;
+    const out = interpretProxyRequest({
+      url,
+      method: "PUT",
+      headers: { "content-type": "text/calendar; charset=utf-8" },
+      bodyText: ics,
+    });
+    expect(out.summary).toBe("Write iCloud CalDAV object");
+    const d = out.details.join("\n");
+    expect(d).toContain("kind: Event");
+    expect(d).toContain("title: Hello");
+    expect(d).toContain("when:");
+  });
 });

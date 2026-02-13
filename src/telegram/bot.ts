@@ -3,6 +3,7 @@ import * as oauth from "oauth4webapi";
 import { ulid } from "ulid";
 
 import { auditEvent } from "../audit/audit";
+import { createConnectState } from "../connect/state";
 import { randomBase64Url } from "../crypto/random";
 import { sha256Hex } from "../crypto/sha256";
 import { db } from "../db/client";
@@ -247,8 +248,20 @@ export function createBot(): Bot {
 
     if (!env.APP_SECRET) {
       await params.ctx.reply(
-        "APP_SECRET is not configured; cannot store refresh tokens."
+        "APP_SECRET is not configured; cannot store provider credentials."
       );
+      return;
+    }
+
+    if (params.providerId === "icloud") {
+      const { state } = createConnectState({
+        userId: params.userId,
+        provider: "icloud",
+        ttlMs: 10 * 60_000,
+      });
+      const base = env.APP_BASE_URL.replace(/\/$/, "");
+      const url = `${base}/v1/accounts/connect/icloud?state=${encodeURIComponent(state)}`;
+      await params.ctx.reply(`Connect icloud: ${url}`);
       return;
     }
 
@@ -304,7 +317,7 @@ export function createBot(): Bot {
         if (!byProvider.has(r.provider)) byProvider.set(r.provider, r);
       }
 
-      const supported = ["google", "github"] as const;
+      const supported = ["google", "github", "icloud"] as const;
       const connectedLines: string[] = [];
       for (const p of supported) {
         const r = byProvider.get(p);
@@ -334,7 +347,7 @@ export function createBot(): Bot {
     await sendConnectLink({ ctx, userId, providerId: raw });
   });
 
-  bot.callbackQuery(/c:connect:(google|github)/, async (ctx) => {
+  bot.callbackQuery(/c:connect:(google|github|icloud)/, async (ctx) => {
     if (!ctx.from) return;
     const providerId = ctx.match?.[1] ?? "";
     const userId = ensureUser(ctx.from.id);

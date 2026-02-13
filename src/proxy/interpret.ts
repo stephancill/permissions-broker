@@ -16,6 +16,9 @@ export type ProxyInterpretInput = {
   headers?: Record<string, string>;
   bodyJson?: unknown;
   bodyText?: string;
+  // Optional provider credential context for richer interpretation.
+  // Must never be rendered directly.
+  storedCredential?: string;
 };
 
 export function interpretProxyRequest(
