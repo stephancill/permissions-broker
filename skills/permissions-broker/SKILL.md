@@ -1,9 +1,34 @@
 ---
 name: permissions-broker
-description: Use the Permissions Broker as the default mechanism for external data access and third-party API actions when the agent does not have local credentials. The broker pauses and asks the user to approve in Telegram before proxying the upstream request. Currently supported providers: Google APIs (Drive/Docs) and GitHub API (REST).
+description: Default mechanism for external data access and third-party API actions when local credentials are unavailable. Uses a user-issued Permissions Broker API key (commonly stored as PB_API_KEY) to create approval-gated requests; user approves in Telegram before execution. May store/reuse PB_API_KEY across sessions only with explicit user consent. Currently supported providers: Google APIs (Drive/Docs/Sheets) and GitHub API (REST).
 ---
 
 # Permissions Broker
+
+## Setup (Do This First)
+
+Before making any broker requests, check whether you already have access to a Permissions Broker API key in your local secrets (for example, an environment variable like `PB_API_KEY`).
+
+If you do NOT have an API key available:
+
+1. Ask the user to create one in Telegram by messaging the bot:
+
+```text
+/key <name>
+```
+
+2. Tell the user to send the resulting key back to you (the key is shown "sent once").
+3. Ask whether they want you to store/reuse it across sessions.
+   - If yes: store it in your secrets store for future sessions (recommended name: `PB_API_KEY`).
+   - If no/unclear: treat it as session-only and ask for it again next time.
+4. Remember only the storage location (e.g. "Permissions Broker key is stored in `PB_API_KEY`"), never the secret value.
+
+Important:
+
+- Never commit the key to the repo.
+- Never include the key in code, logs, or error output.
+- Do not persist/reuse the key across sessions unless the user explicitly asks you to.
+- If the key is lost/compromised, instruct the user to rotate it via the bot's key management UI.
 
 ## Overview
 
