@@ -10,6 +10,7 @@ import { interpretProxyRequest } from "../proxy/interpret";
 import type { ProxyProvider } from "../proxy/provider";
 import { getProxyProviderForUrl } from "../proxy/providerRegistry";
 import { readBodyWithLimit } from "../proxy/readLimit";
+import { hasAlwaysAllowRule } from "../proxy/alwaysAllow";
 import { createProxyRequest } from "../proxy/requests";
 import { validateUpstreamUrl } from "../proxy/url";
 import { telegramApi } from "../telegram/api";
@@ -771,6 +772,12 @@ proxyRouter.post("/request", requireApiKey, async (c) => {
     );
   }
 
+  const alwaysAllow = hasAlwaysAllowRule({
+    userId: auth.userId,
+    method: methodNorm,
+    url: validatedUrl,
+  });
+
   const normalizedHeaders = normalizeHeaders(
     provider.extraAllowedRequestHeaders,
     headers
@@ -800,7 +807,7 @@ proxyRouter.post("/request", requireApiKey, async (c) => {
     bodyBase64,
   });
 
-  const created = await createProxyRequest({
+  let created = await createProxyRequest({
     userId: auth.userId,
     apiKeyId: auth.apiKeyId,
     apiKeyLabelSnapshot: auth.apiKeyLabel,
@@ -812,6 +819,18 @@ proxyRouter.post("/request", requireApiKey, async (c) => {
     idempotencyKey: idempotencyKey ?? undefined,
     approvalTtlMs: 2 * 60_000,
   });
+
+  // If a permanent allow rule exists for this endpoint, skip the Telegram round-trip.
+  // (We still create a proxy_request row for auditability and idempotency semantics.)
+  if (alwaysAllow && created.status === "PENDING_APPROVAL") {
+    db()
+      .query(
+        "UPDATE proxy_requests SET status = 'APPROVED', updated_at = ?, error_code = NULL, error_message = NULL WHERE id = ? AND user_id = ? AND status = 'PENDING_APPROVAL';"
+      )
+      .run(new Date().toISOString(), created.requestId, auth.userId);
+
+    created = { ...created, status: "APPROVED" };
+  }
 
   if (created.isNew) {
     auditEvent({
@@ -831,7 +850,12 @@ proxyRouter.post("/request", requireApiKey, async (c) => {
     .query("SELECT telegram_user_id FROM users WHERE id = ?;")
     .get(auth.userId) as { telegram_user_id: number } | null;
 
-  if (created.isNew && u?.telegram_user_id && env.TELEGRAM_BOT_TOKEN) {
+  if (
+    created.isNew &&
+    created.status === "PENDING_APPROVAL" &&
+    u?.telegram_user_id &&
+    env.TELEGRAM_BOT_TOKEN
+  ) {
     const url = new URL(created.canonicalUpstreamUrl);
 
     const interpreted = interpretProxyRequest({
@@ -917,6 +941,10 @@ proxyRouter.post("/request", requireApiKey, async (c) => {
       inline_keyboard: [
         [
           { text: "Approve", callback_data: `r:approve:${created.requestId}` },
+          {
+            text: "Always allow",
+            callback_data: `r:always_allow:${created.requestId}`,
+          },
           { text: "Deny", callback_data: `r:deny:${created.requestId}` },
         ],
       ],
