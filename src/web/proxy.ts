@@ -820,6 +820,8 @@ proxyRouter.post("/request", requireApiKey, async (c) => {
     approvalTtlMs: 2 * 60_000,
   });
 
+  let autoApproved = false;
+
   // If a permanent allow rule exists for this endpoint, skip the Telegram round-trip.
   // (We still create a proxy_request row for auditability and idempotency semantics.)
   if (alwaysAllow && created.status === "PENDING_APPROVAL") {
@@ -830,6 +832,7 @@ proxyRouter.post("/request", requireApiKey, async (c) => {
       .run(new Date().toISOString(), created.requestId, auth.userId);
 
     created = { ...created, status: "APPROVED" };
+    autoApproved = true;
   }
 
   if (created.isNew) {
@@ -850,112 +853,142 @@ proxyRouter.post("/request", requireApiKey, async (c) => {
     .query("SELECT telegram_user_id FROM users WHERE id = ?;")
     .get(auth.userId) as { telegram_user_id: number } | null;
 
-  if (
-    created.isNew &&
-    created.status === "PENDING_APPROVAL" &&
-    u?.telegram_user_id &&
-    env.TELEGRAM_BOT_TOKEN
-  ) {
-    const url = new URL(created.canonicalUpstreamUrl);
+  if (created.isNew && u?.telegram_user_id && env.TELEGRAM_BOT_TOKEN) {
+    // Inform the user that the request was auto-approved via an always-allow rule.
+    if (autoApproved) {
+      const url = new URL(created.canonicalUpstreamUrl);
+      const text = [
+        "<b>Permission request</b>",
+        "",
+        "Decision: <code>AUTO-APPROVED</code>",
+        "Reason: <code>Always allow</code> rule matched this endpoint",
+        "",
+        `<b>API key</b>: <code>${escapeHtml(auth.apiKeyLabel)}</code>`,
+        `<b>Request</b>: <code>${escapeHtml(`${methodNorm} ${url.hostname}${url.pathname}`)}</code>`,
+      ].join("\n");
 
-    const interpreted = interpretProxyRequest({
-      url,
-      method: methodNorm,
-      headers: normalizedHeaders,
-      bodyJson: decodedForInterpret.bodyJson,
-      bodyText: decodedForInterpret.bodyText,
-      storedCredential:
-        provider.id === "icloud" ? storedCredentialForValidation : undefined,
-    });
-
-    let detailsForTelegram = interpreted.details;
-
-    // iCloud: enrich PUT approvals with a just-in-time collection name.
-    // This does an upstream PROPFIND (Depth: 0) to fetch the collection displayname.
-    if (
-      provider.id === "icloud" &&
-      storedCredentialForValidation &&
-      methodNorm === "PUT" &&
-      interpreted.details.length
-    ) {
-      const name = await maybeLookupIcloudCollectionDisplayName({
-        objectUrl: url,
-        provider,
-        userId: auth.userId,
-        storedCredential: storedCredentialForValidation,
-      });
-      if (name) {
-        const details = [...interpreted.details];
-        const kindIdx = details.findIndex((d) => d.startsWith("kind: "));
-        if (kindIdx !== -1) {
-          const kind = details[kindIdx].slice("kind: ".length).trim();
-          const label =
-            kind === "Event"
-              ? "calendar"
-              : kind === "Reminder"
-                ? "list"
-                : "collection";
-          // Insert after kind line.
-          details.splice(kindIdx + 1, 0, `${label}: ${name}`);
-          detailsForTelegram = details;
-        } else {
-          detailsForTelegram = [`collection: ${name}`, ...details];
-        }
-      }
+      telegramApi()
+        .sendMessage(u.telegram_user_id, text, { parse_mode: "HTML" })
+        .catch(() => {});
     }
 
-    const queryLine =
-      detailsForTelegram.length === 0 ? formatQueryForTelegram(url) : "";
+    // If still pending, ask for explicit approval.
+    if (created.status !== "PENDING_APPROVAL") {
+      return c.json({
+        request_id: created.requestId,
+        status: created.status,
+        approval_expires_at: created.approvalExpiresAt,
+      });
+    }
 
-    const requesterNote = consentHint
-      ? `<b>Requester note</b>: ${escapeHtml(truncate(consentHint, 300))}`
-      : "";
+    {
+      const url = new URL(created.canonicalUpstreamUrl);
+      const hashPrefix = created.requestHash.slice(0, 12);
 
-    const detailsBlock = detailsForTelegram.length
-      ? [
-          "<b>Details</b>:",
-          ...detailsForTelegram.map((d) => `- ${escapeHtml(d)}`),
-        ].join("\n")
-      : "";
+      const interpreted = interpretProxyRequest({
+        url,
+        method: methodNorm,
+        headers: normalizedHeaders,
+        bodyJson: decodedForInterpret.bodyJson,
+        bodyText: decodedForInterpret.bodyText,
+        storedCredential:
+          provider.id === "icloud" ? storedCredentialForValidation : undefined,
+      });
 
-    const text = [
-      "<b>Permission request</b>",
-      "",
-      `<b>API key</b>: <code>${escapeHtml(auth.apiKeyLabel)}</code>`,
-      `<b>Action</b>: ${escapeHtml(interpreted.summary)}`,
-      detailsBlock,
-      "",
-      `<b>Request</b>: <code>${escapeHtml(`${methodNorm} ${url.hostname}${url.pathname}`)}</code>`,
-      queryLine,
-      decodedForInterpret.bodySummary != null && detailsForTelegram.length === 0
-        ? `<b>Body</b>: <pre>${escapeHtml(truncate(decodedForInterpret.bodySummary, 500))}</pre>`
-        : "",
-      "",
-      ...(requesterNote ? ["", requesterNote, ""] : []),
-      "Approve to allow the agent to execute this request.",
-    ]
-      .filter(Boolean)
-      .join("\n");
+      let detailsForTelegram = interpreted.details;
 
-    const kb = {
-      inline_keyboard: [
-        [
-          { text: "Approve", callback_data: `r:approve:${created.requestId}` },
-          {
-            text: "Always allow",
-            callback_data: `r:always_allow:${created.requestId}`,
-          },
-          { text: "Deny", callback_data: `r:deny:${created.requestId}` },
+      // iCloud: enrich PUT approvals with a just-in-time collection name.
+      // This does an upstream PROPFIND (Depth: 0) to fetch the collection displayname.
+      if (
+        provider.id === "icloud" &&
+        storedCredentialForValidation &&
+        methodNorm === "PUT" &&
+        interpreted.details.length
+      ) {
+        const name = await maybeLookupIcloudCollectionDisplayName({
+          objectUrl: url,
+          provider,
+          userId: auth.userId,
+          storedCredential: storedCredentialForValidation,
+        });
+        if (name) {
+          const details = [...interpreted.details];
+          const kindIdx = details.findIndex((d) => d.startsWith("kind: "));
+          if (kindIdx !== -1) {
+            const kind = details[kindIdx].slice("kind: ".length).trim();
+            const label =
+              kind === "Event"
+                ? "calendar"
+                : kind === "Reminder"
+                  ? "list"
+                  : "collection";
+            // Insert after kind line.
+            details.splice(kindIdx + 1, 0, `${label}: ${name}`);
+            detailsForTelegram = details;
+          } else {
+            detailsForTelegram = [`collection: ${name}`, ...details];
+          }
+        }
+      }
+
+      const queryLine =
+        detailsForTelegram.length === 0 ? formatQueryForTelegram(url) : "";
+
+      const requesterNote = consentHint
+        ? `<b>Requester note</b>: ${escapeHtml(truncate(consentHint, 300))}`
+        : "";
+
+      const detailsBlock = detailsForTelegram.length
+        ? [
+            "<b>Details</b>",
+            ...detailsForTelegram.map((d) => `- ${escapeHtml(d)}`),
+          ].join("\n")
+        : "";
+
+      const text = [
+        "<b>Permission request</b>",
+        "",
+        `<b>API key</b>: <code>${escapeHtml(auth.apiKeyLabel)}</code>`,
+        `<b>Action</b>: ${escapeHtml(interpreted.summary)}`,
+        detailsBlock,
+        "",
+        `<b>Request</b>: <code>${escapeHtml(`${methodNorm} ${url.hostname}${url.pathname}`)}</code>`,
+        queryLine,
+        decodedForInterpret.bodySummary != null &&
+        detailsForTelegram.length === 0
+          ? `<b>Body</b>: <pre>${escapeHtml(truncate(decodedForInterpret.bodySummary, 500))}</pre>`
+          : "",
+        "",
+        ...(requesterNote ? ["", requesterNote, ""] : []),
+        "Approve to allow the agent to execute this request.",
+        `Hash: <code>${escapeHtml(hashPrefix)}</code>`,
+      ]
+        .filter(Boolean)
+        .join("\n");
+
+      const kb = {
+        inline_keyboard: [
+          [
+            {
+              text: "Approve",
+              callback_data: `r:approve:${created.requestId}`,
+            },
+            {
+              text: "Always allow",
+              callback_data: `r:always_allow:${created.requestId}`,
+            },
+            { text: "Deny", callback_data: `r:deny:${created.requestId}` },
+          ],
         ],
-      ],
-    };
+      };
 
-    telegramApi()
-      .sendMessage(u.telegram_user_id, text, {
-        reply_markup: kb,
-        parse_mode: "HTML",
-      })
-      .catch(() => {});
+      telegramApi()
+        .sendMessage(u.telegram_user_id, text, {
+          reply_markup: kb,
+          parse_mode: "HTML",
+        })
+        .catch(() => {});
+    }
   }
 
   return c.json({
