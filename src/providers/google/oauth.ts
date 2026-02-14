@@ -14,9 +14,13 @@ export function googleProvider(): OAuthProviderConfig {
     clientId: env.GOOGLE_OAUTH_CLIENT_ID,
     clientSecret: env.GOOGLE_OAUTH_CLIENT_SECRET,
     scopes: [
+      // Drive read-only for listing/searching files.
       "https://www.googleapis.com/auth/drive.readonly",
+      // Limited Drive write access for files created/opened by this app (e.g. new Sheets).
+      "https://www.googleapis.com/auth/drive.file",
       "https://www.googleapis.com/auth/documents.readonly",
-      "https://www.googleapis.com/auth/spreadsheets.readonly",
+      // Sheets write access (needed to create spreadsheets + append/update values).
+      "https://www.googleapis.com/auth/spreadsheets",
     ],
     pkceRequired: true,
     extraAuthorizeParams: {
