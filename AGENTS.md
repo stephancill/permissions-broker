@@ -58,6 +58,14 @@ bun test
 
 Formatting/linting uses Biome.
 
+## Linting Rules
+
+- Use Biome for both formatting and linting; do not add ESLint/Prettier alongside it.
+- Run `bun run format` before `bun run lint` when touching JS/TS/JSON/MD; Biome will auto-fix formatting issues.
+- Treat `bun run lint` (`biome check .`) as required; do not merge with lint failures.
+- Prefer fixing issues over suppressing them. If suppression is necessary, keep it scoped and include a short rationale.
+- CI runs Biome in GitHub Actions via the `Lint` workflow.
+
 ## Repo Map
 
 - `src/server.ts`: server wiring / router mounting
