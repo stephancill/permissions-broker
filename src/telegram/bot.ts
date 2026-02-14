@@ -3,7 +3,7 @@ import * as oauth from "oauth4webapi";
 import { ulid } from "ulid";
 
 import { auditEvent } from "../audit/audit";
-/* createConnectState import removed (unused) */
+import { createConnectState } from "../connect/state";
 import { randomBase64Url } from "../crypto/random";
 import { sha256Hex } from "../crypto/sha256";
 import { db } from "../db/client";
@@ -13,7 +13,9 @@ import { buildAuthorizationUrl } from "../oauth/flow";
 import type { OAuthProviderConfig } from "../oauth/provider";
 import { getProvider } from "../oauth/registry";
 import { createOauthState } from "../oauth/state";
+import { listProxyProviderIds } from "../proxy/providerRegistry";
 import { decideProxyRequest } from "../proxy/requests";
+import type { ProxyProviderId } from "../proxy/provider";
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -234,8 +236,10 @@ export function createBot(): Bot {
     );
   });
 
-  const supportedProviders = ["google", "github"] as const;
-  type SupportedProvider = (typeof supportedProviders)[number];
+  // Single source of truth: proxy provider registry.
+  // (Every proxy provider must be connectable in some way.)
+  const supportedProviders = listProxyProviderIds();
+  type SupportedProvider = ProxyProviderId;
 
   function nowIso(): string {
     return new Date().toISOString();
@@ -357,7 +361,15 @@ export function createBot(): Bot {
       );
     }
 
-    // Note: icloud connect is handled outside the Telegram provider-button flow.
+    if (params.providerId === "icloud") {
+      const { state } = createConnectState({
+        userId: params.userId,
+        provider: "icloud",
+        ttlMs: 10 * 60_000,
+      });
+      const base = env.APP_BASE_URL.replace(/\/$/, "");
+      return `${base}/v1/accounts/connect/icloud?state=${encodeURIComponent(state)}`;
+    }
 
     let provider: OAuthProviderConfig;
     try {
@@ -427,7 +439,7 @@ export function createBot(): Bot {
     });
   });
 
-  bot.callbackQuery(/c:connections:provider:(google|github)/, async (ctx) => {
+  bot.callbackQuery(/c:connections:provider:(google|github|icloud)/, async (ctx) => {
     if (!ctx.from) return;
     const userId = ensureUser(ctx.from.id);
     const providerId = (ctx.match?.[1] ?? "") as SupportedProvider;
@@ -439,7 +451,7 @@ export function createBot(): Bot {
     });
   });
 
-  bot.callbackQuery(/c:connections:disconnect:(google|github)/, async (ctx) => {
+  bot.callbackQuery(/c:connections:disconnect:(google|github|icloud)/, async (ctx) => {
     if (!ctx.from) return;
     const userId = ensureUser(ctx.from.id);
     const providerId = (ctx.match?.[1] ?? "") as SupportedProvider;
@@ -457,7 +469,7 @@ export function createBot(): Bot {
     });
   });
 
-  bot.callbackQuery(/c:connections:reconnect:(google|github)/, async (ctx) => {
+  bot.callbackQuery(/c:connections:reconnect:(google|github|icloud)/, async (ctx) => {
     if (!ctx.from) return;
     const userId = ensureUser(ctx.from.id);
     const providerId = (ctx.match?.[1] ?? "") as SupportedProvider;
@@ -481,7 +493,7 @@ export function createBot(): Bot {
     }
   });
 
-  bot.callbackQuery(/c:connect:(google|github)/, async (ctx) => {
+  bot.callbackQuery(/c:connect:(google|github|icloud)/, async (ctx) => {
     if (!ctx.from) return;
     const providerId = ctx.match?.[1] ?? "";
     const userId = ensureUser(ctx.from.id);
