@@ -747,11 +747,13 @@ export function createBot(): Bot {
     if (action === "always_allow") {
       const row = db()
         .query(
-          "SELECT upstream_url, method FROM proxy_requests WHERE id = ? AND user_id = ? LIMIT 1;"
+          "SELECT upstream_url, method, api_key_id, requester_ip FROM proxy_requests WHERE id = ? AND user_id = ? LIMIT 1;"
         )
         .get(requestId, userId) as {
         upstream_url: string;
         method: string;
+        api_key_id: string;
+        requester_ip: string | null;
       } | null;
 
       if (!row) {
@@ -759,8 +761,17 @@ export function createBot(): Bot {
         return;
       }
 
+      if (!row.requester_ip) {
+        await ctx.answerCallbackQuery({
+          text: "missing requester IP (cannot scope always-allow)",
+        });
+        return;
+      }
+
       const { ruleId } = upsertAlwaysAllowRule({
         userId,
+        apiKeyId: row.api_key_id,
+        requesterIp: row.requester_ip,
         method: row.method,
         url: new URL(row.upstream_url),
       });
@@ -773,6 +784,8 @@ export function createBot(): Bot {
         eventType: "proxy_always_allow_created",
         event: {
           rule_id: ruleId,
+          api_key_id: row.api_key_id,
+          requester_ip: row.requester_ip,
           method: row.method,
           upstream_url: row.upstream_url,
         },

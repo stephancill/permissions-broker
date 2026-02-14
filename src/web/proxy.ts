@@ -1,3 +1,4 @@
+import type { Context } from "hono";
 import { Hono } from "hono";
 import { z } from "zod";
 
@@ -181,6 +182,19 @@ function escapeHtml(s: string): string {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
+}
+
+function getRequesterIp(c: Context): string | null {
+  const xff = c.req.header("x-forwarded-for");
+  if (xff) {
+    const first = xff.split(",", 1)[0]?.trim();
+    if (first) return first;
+  }
+
+  const xri = c.req.header("x-real-ip");
+  if (xri) return xri.trim() || null;
+
+  return null;
 }
 
 async function fetchWithAllowedRedirects(params: {
@@ -772,11 +786,18 @@ proxyRouter.post("/request", requireApiKey, async (c) => {
     );
   }
 
-  const alwaysAllow = hasAlwaysAllowRule({
-    userId: auth.userId,
-    method: methodNorm,
-    url: validatedUrl,
-  });
+  const requesterIp = getRequesterIp(c);
+
+  const alwaysAllow =
+    requesterIp != null
+      ? hasAlwaysAllowRule({
+          userId: auth.userId,
+          apiKeyId: auth.apiKeyId,
+          requesterIp,
+          method: methodNorm,
+          url: validatedUrl,
+        })
+      : false;
 
   const normalizedHeaders = normalizeHeaders(
     provider.extraAllowedRequestHeaders,
@@ -811,6 +832,7 @@ proxyRouter.post("/request", requireApiKey, async (c) => {
     userId: auth.userId,
     apiKeyId: auth.apiKeyId,
     apiKeyLabelSnapshot: auth.apiKeyLabel,
+    requesterIp: requesterIp ?? undefined,
     upstreamUrl,
     method: methodNorm,
     headers: normalizedHeaders,

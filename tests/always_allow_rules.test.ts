@@ -62,24 +62,28 @@ test("always allow: /request auto-approves matching endpoints", async () => {
   await setupDb();
 
   const userId = await insertUser();
-  await insertApiKey({
+  const keyA = await insertApiKey({
     userId,
     label: "keyA",
     keyPlain: "pb_test_key_a",
   });
 
-  // Create permanent allow rule for GET api.github.com/user
+  // Create permanent allow rule for GET api.github.com/user, scoped to key/IP.
   upsertAlwaysAllowRule({
     userId,
+    apiKeyId: keyA.apiKeyId,
+    requesterIp: "203.0.113.10",
     method: "GET",
     url: new URL("https://api.github.com/user"),
   });
 
   const res = await app().request("/v1/proxy/request", {
     method: "POST",
+    // Simulate a proxied deployment that passes through the client IP.
     headers: {
       authorization: "Bearer pb_test_key_a",
       "content-type": "application/json",
+      "x-forwarded-for": "203.0.113.10",
     },
     body: JSON.stringify({
       upstream_url: "https://api.github.com/user",
