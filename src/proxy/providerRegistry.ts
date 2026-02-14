@@ -9,6 +9,14 @@ const PROVIDERS: ProxyProvider[] = [
   icloudProxyProvider,
 ];
 
+export function listProxyProviders(): ProxyProvider[] {
+  return [...PROVIDERS];
+}
+
+export function listProxyProviderIds(): ProxyProviderId[] {
+  return PROVIDERS.map((p) => p.id);
+}
+
 export function getProxyProviderById(id: ProxyProviderId): ProxyProvider {
   const p = PROVIDERS.find((x) => x.id === id);
   if (!p) throw new Error(`unknown proxy provider: ${id}`);

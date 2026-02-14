@@ -13,7 +13,9 @@ import { buildAuthorizationUrl } from "../oauth/flow";
 import type { OAuthProviderConfig } from "../oauth/provider";
 import { getProvider } from "../oauth/registry";
 import { createOauthState } from "../oauth/state";
+import { listProxyProviderIds } from "../proxy/providerRegistry";
 import { decideProxyRequest } from "../proxy/requests";
+import type { ProxyProviderId } from "../proxy/provider";
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -234,23 +236,129 @@ export function createBot(): Bot {
     );
   });
 
-  async function sendConnectLink(params: {
-    ctx: { reply: (text: string) => Promise<unknown> };
+  // Single source of truth: proxy provider registry.
+  // (Every proxy provider must be connectable in some way.)
+  const supportedProviders = listProxyProviderIds();
+  type SupportedProvider = ProxyProviderId;
+
+  function nowIso(): string {
+    return new Date().toISOString();
+  }
+
+  function getLinkedAccountsByProvider(userId: string): Map<
+    string,
+    {
+      provider: string;
+      status: string;
+      scopes: string;
+      created_at: string;
+      revoked_at: string | null;
+    }
+  > {
+    const rows = db()
+      .query(
+        "SELECT provider, status, scopes, created_at, revoked_at FROM linked_accounts WHERE user_id = ? ORDER BY created_at DESC;"
+      )
+      .all(userId) as {
+      provider: string;
+      status: string;
+      scopes: string;
+      created_at: string;
+      revoked_at: string | null;
+    }[];
+
+    const byProvider = new Map<string, (typeof rows)[number]>();
+    for (const r of rows) {
+      if (!byProvider.has(r.provider)) byProvider.set(r.provider, r);
+    }
+    return byProvider;
+  }
+
+  function renderConnectionsList(userId: string): {
+    text: string;
+    keyboard: InlineKeyboard;
+  } {
+    const byProvider = getLinkedAccountsByProvider(userId);
+
+    const lines: string[] = [];
+    for (const p of supportedProviders) {
+      const r = byProvider.get(p);
+      if (!r) {
+        lines.push(`- ${p}: not connected`);
+        continue;
+      }
+      lines.push(
+        `- ${p}: ${r.status} scopes=${r.scopes} created=${r.created_at}`
+      );
+    }
+
+    const kb = new InlineKeyboard();
+    for (const p of supportedProviders) {
+      const r = byProvider.get(p);
+      if (r?.status === "active") {
+        kb.text(`${p}: connected`, `c:connections:provider:${p}`).row();
+      } else {
+        kb.text(`Connect ${p}`, `c:connect:${p}`).row();
+      }
+    }
+
+    return {
+      text: `Connected accounts:\n${lines.join("\n")}\n\nUse /connect <provider> or the buttons below.`,
+      keyboard: kb,
+    };
+  }
+
+  function renderProviderDetails(
+    userId: string,
+    providerId: SupportedProvider
+  ): {
+    text: string;
+    keyboard: InlineKeyboard;
+  } {
+    const byProvider = getLinkedAccountsByProvider(userId);
+    const r = byProvider.get(providerId);
+
+    const kb = new InlineKeyboard();
+
+    if (!r) {
+      kb.text(`Connect ${providerId}`, `c:connect:${providerId}`).row();
+      kb.text("← Back", "c:connections:list");
+      return {
+        text: `${providerId}\n\nStatus: not connected`,
+        keyboard: kb,
+      };
+    }
+
+    const statusLine = r.revoked_at
+      ? `Status: ${r.status} (revoked_at=${r.revoked_at})`
+      : `Status: ${r.status}`;
+
+    if (r.status === "active") {
+      kb.text("Disconnect", `c:connections:disconnect:${providerId}`).row();
+    }
+    kb.text("Reconnect", `c:connections:reconnect:${providerId}`).row();
+    kb.text("← Back", "c:connections:list");
+
+    return {
+      text: `${providerId}\n\n${statusLine}\nScopes: ${r.scopes}\nConnected: ${r.created_at}`,
+      keyboard: kb,
+    };
+  }
+
+  async function getConnectUrl(params: {
     userId: string;
     providerId: string;
-  }): Promise<void> {
+  }): Promise<string> {
     if (!env.APP_BASE_URL) {
-      await params.ctx.reply(
+      throw new Error(
         "APP_BASE_URL is not configured; cannot create OAuth link."
       );
-      return;
     }
 
     if (!env.APP_SECRET) {
-      await params.ctx.reply(
-        "APP_SECRET is not configured; cannot store provider credentials."
+      throw new Error(
+        "APP_SECRET is not configured; cannot store refresh tokens."
       );
-      return;
     }
 
     if (params.providerId === "icloud") {
@@ -260,9 +368,7 @@ export function createBot(): Bot {
         ttlMs: 10 * 60_000,
       });
       const base = env.APP_BASE_URL.replace(/\/$/, "");
-      const url = `${base}/v1/accounts/connect/icloud?state=${encodeURIComponent(state)}`;
-      await params.ctx.reply(`Connect icloud: ${url}`);
-      return;
+      return `${base}/v1/accounts/connect/icloud?state=${encodeURIComponent(state)}`;
     }
 
     let provider: OAuthProviderConfig;
@@ -270,8 +376,7 @@ export function createBot(): Bot {
       provider = getProvider(params.providerId);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      await params.ctx.reply(`OAuth provider not configured. ${msg}`);
-      return;
+      throw new Error(`OAuth provider not configured. ${msg}`);
     }
 
     const redirectUri = `${env.APP_BASE_URL}/v1/accounts/callback/${params.providerId}`;
@@ -283,14 +388,29 @@ export function createBot(): Bot {
       pkceVerifier: codeVerifier,
     });
 
-    const url = await buildAuthorizationUrl({
+    return buildAuthorizationUrl({
       provider,
       redirectUri,
       state,
       codeVerifier,
     });
+  }
 
-    await params.ctx.reply(`Connect ${params.providerId}: ${url}`);
+  async function sendConnectLink(params: {
+    ctx: { reply: (text: string) => Promise<unknown> };
+    userId: string;
+    providerId: string;
+  }): Promise<void> {
+    try {
+      const url = await getConnectUrl({
+        userId: params.userId,
+        providerId: params.providerId,
+      });
+      await params.ctx.reply(`Connect ${params.providerId}: ${url}`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await params.ctx.reply(msg);
+    }
   }
 
   bot.command("connect", async (ctx) => {
@@ -300,57 +420,127 @@ export function createBot(): Bot {
     const raw = (ctx.match ?? "").toString().trim();
 
     if (!raw) {
-      const rows = db()
-        .query(
-          "SELECT provider, status, scopes, created_at, revoked_at FROM linked_accounts WHERE user_id = ? ORDER BY created_at DESC;"
-        )
-        .all(userId) as {
-        provider: string;
-        status: string;
-        scopes: string;
-        created_at: string;
-        revoked_at: string | null;
-      }[];
-
-      const byProvider = new Map<string, (typeof rows)[number]>();
-      for (const r of rows) {
-        if (!byProvider.has(r.provider)) byProvider.set(r.provider, r);
-      }
-
-      const supported = ["google", "github", "icloud"] as const;
-      const connectedLines: string[] = [];
-      for (const p of supported) {
-        const r = byProvider.get(p);
-        if (!r) {
-          connectedLines.push(`- ${p}: not connected`);
-          continue;
-        }
-        connectedLines.push(
-          `- ${p}: ${r.status} scopes=${r.scopes} created=${r.created_at}`
-        );
-      }
-
-      const kb = new InlineKeyboard();
-      for (const p of supported) {
-        if (!byProvider.get(p) || byProvider.get(p)?.status !== "active") {
-          kb.text(`Connect ${p}`, `c:connect:${p}`).row();
-        }
-      }
-
-      await ctx.reply(
-        `Connected accounts:\n${connectedLines.join("\n")}\n\nUse /connect <provider> or the buttons below.`,
-        { reply_markup: kb }
-      );
+      const rendered = renderConnectionsList(userId);
+      await ctx.reply(rendered.text, { reply_markup: rendered.keyboard });
       return;
     }
 
     await sendConnectLink({ ctx, userId, providerId: raw });
   });
 
-  bot.callbackQuery(/c:connect:(google|github|icloud)/, async (ctx) => {
+  bot.callbackQuery(/c:connections:list/, async (ctx) => {
     if (!ctx.from) return;
-    const providerId = ctx.match?.[1] ?? "";
     const userId = ensureUser(ctx.from.id);
+    const rendered = renderConnectionsList(userId);
+
+    await ctx.answerCallbackQuery();
+    await ctx.editMessageText(rendered.text, {
+      reply_markup: rendered.keyboard,
+    });
+  });
+
+  function parseProviderIdFromCallbackData(
+    prefix: string,
+    data: string | undefined
+  ): SupportedProvider | null {
+    if (!data) return null;
+    if (!data.startsWith(prefix)) return null;
+    const id = data.slice(prefix.length);
+    if (!supportedProviders.includes(id as SupportedProvider)) return null;
+    return id as SupportedProvider;
+  }
+
+  bot.callbackQuery(/^c:connections:provider:/, async (ctx) => {
+    if (!ctx.from) return;
+    const userId = ensureUser(ctx.from.id);
+    const providerId = parseProviderIdFromCallbackData(
+      "c:connections:provider:",
+      ctx.callbackQuery.data
+    );
+
+    if (!providerId) {
+      await ctx.answerCallbackQuery({ text: "unknown provider" });
+      return;
+    }
+
+    const rendered = renderProviderDetails(userId, providerId);
+
+    await ctx.answerCallbackQuery();
+    await ctx.editMessageText(rendered.text, {
+      reply_markup: rendered.keyboard,
+    });
+  });
+
+  bot.callbackQuery(/^c:connections:disconnect:/, async (ctx) => {
+    if (!ctx.from) return;
+    const userId = ensureUser(ctx.from.id);
+    const providerId = parseProviderIdFromCallbackData(
+      "c:connections:disconnect:",
+      ctx.callbackQuery.data
+    );
+
+    if (!providerId) {
+      await ctx.answerCallbackQuery({ text: "unknown provider" });
+      return;
+    }
+
+    db()
+      .query(
+        "UPDATE linked_accounts SET status = 'revoked', revoked_at = ? WHERE user_id = ? AND provider = ? AND status = 'active';"
+      )
+      .run(nowIso(), userId, providerId);
+
+    const rendered = renderProviderDetails(userId, providerId);
+    await ctx.answerCallbackQuery({ text: "disconnected" });
+    await ctx.editMessageText(rendered.text, {
+      reply_markup: rendered.keyboard,
+    });
+  });
+
+  bot.callbackQuery(/^c:connections:reconnect:/, async (ctx) => {
+    if (!ctx.from) return;
+    const userId = ensureUser(ctx.from.id);
+    const providerId = parseProviderIdFromCallbackData(
+      "c:connections:reconnect:",
+      ctx.callbackQuery.data
+    );
+
+    if (!providerId) {
+      await ctx.answerCallbackQuery({ text: "unknown provider" });
+      return;
+    }
+
+    await ctx.answerCallbackQuery({ text: "link generated" });
+
+    try {
+      const url = await getConnectUrl({ userId, providerId });
+      const kb = new InlineKeyboard()
+        .text("← Back", "c:connections:list")
+        .row()
+        .text("Details", `c:connections:provider:${providerId}`);
+
+      await ctx.editMessageText(
+        `Reconnect ${providerId}: ${url}\n\nAfter completing OAuth, come back here.`,
+        { reply_markup: kb }
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await ctx.editMessageText(msg);
+    }
+  });
+
+  bot.callbackQuery(/^c:connect:/, async (ctx) => {
+    if (!ctx.from) return;
+    const userId = ensureUser(ctx.from.id);
+    const providerId = parseProviderIdFromCallbackData(
+      "c:connect:",
+      ctx.callbackQuery.data
+    );
+
+    if (!providerId) {
+      await ctx.answerCallbackQuery({ text: "unknown provider" });
+      return;
+    }
 
     await ctx.answerCallbackQuery({ text: "link generated" });
     await sendConnectLink({ ctx, userId, providerId });
