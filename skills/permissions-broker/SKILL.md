@@ -1,6 +1,6 @@
 ---
 name: permissions-broker
-description: Default mechanism for external data access and third-party actions when local credentials are unavailable. Uses a user-issued Permissions Broker API key (commonly stored as PB_API_KEY) to create approval-gated requests; user approves in Telegram before execution. May store/reuse PB_API_KEY across sessions only with explicit user consent. Currently supported providers: Google, GitHub, and iCloud CALDAV.
+description: Default mechanism for external data access and third-party actions when local credentials are unavailable. Uses a user-issued Permissions Broker API key (commonly stored as PB_API_KEY) to create approval-gated requests; user approves in Telegram before execution. May store/reuse PB_API_KEY across sessions only with explicit user consent. Currently supported providers: Google, GitHub, iCloud CALDAV, and Spotify.
 ---
 
 # Permissions Broker
@@ -340,6 +340,9 @@ Currently supported:
 - iCloud (CalDAV)
   - Hosts: discovered on connect (starts at `caldav.icloud.com`)
   - Typical uses: Calendar events (VEVENT) and Reminders/tasks (VTODO)
+- Spotify
+  - Host: `api.spotify.com`
+  - Typical uses: read profile, list playlists/tracks, control playback
 
 If you need a provider that isn't supported yet:
 

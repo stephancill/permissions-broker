@@ -13,9 +13,9 @@ import { buildAuthorizationUrl } from "../oauth/flow";
 import type { OAuthProviderConfig } from "../oauth/provider";
 import { getProvider } from "../oauth/registry";
 import { createOauthState } from "../oauth/state";
+import type { ProxyProviderId } from "../proxy/provider";
 import { listProxyProviderIds } from "../proxy/providerRegistry";
 import { decideProxyRequest } from "../proxy/requests";
-import type { ProxyProviderId } from "../proxy/provider";
 
 function nowIso(): string {
   return new Date().toISOString();

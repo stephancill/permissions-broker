@@ -1,12 +1,14 @@
 import { githubProxyProvider } from "../providers/github/proxy";
 import { googleProxyProvider } from "../providers/google/proxy";
 import { icloudProxyProvider } from "../providers/icloud/proxy";
+import { spotifyProxyProvider } from "../providers/spotify/proxy";
 import type { ProxyProvider, ProxyProviderId } from "./provider";
 
 const PROVIDERS: ProxyProvider[] = [
   googleProxyProvider,
   githubProxyProvider,
   icloudProxyProvider,
+  spotifyProxyProvider,
 ];
 
 export function listProxyProviders(): ProxyProvider[] {

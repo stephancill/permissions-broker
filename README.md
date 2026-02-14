@@ -11,6 +11,7 @@ Current providers:
 - Google (Drive/Docs/Sheets)
 - GitHub
 - iCloud (CalDAV)
+- Spotify
 
 Docs
 
@@ -35,6 +36,8 @@ Agent skill
   - `APP_SECRET` (random secret used to encrypt refresh tokens)
   - `GOOGLE_OAUTH_CLIENT_ID`
   - `GOOGLE_OAUTH_CLIENT_SECRET`
+  - `SPOTIFY_OAUTH_CLIENT_ID`
+  - `SPOTIFY_OAUTH_CLIENT_SECRET`
 
 3. Run migrations (optional; server runs them on startup)
 
@@ -57,6 +60,7 @@ In Telegram (to your bot):
 - `/connect` (shows connection status + buttons)
 - `/connect google` (generates Google OAuth link)
 - `/connect github` (generates GitHub OAuth link)
+- `/connect spotify` (generates Spotify OAuth link)
 - `/keys` (rename/revoke/rotate keys)
 
 ## Public API (MVP)

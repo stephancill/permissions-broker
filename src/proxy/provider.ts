@@ -1,6 +1,6 @@
 import type { InterpretedRequest, ProxyInterpretInput } from "./interpret";
 
-export type ProxyProviderId = "google" | "github" | "icloud";
+export type ProxyProviderId = "google" | "github" | "icloud" | "spotify";
 
 export type ProxyProvider = {
   id: ProxyProviderId;

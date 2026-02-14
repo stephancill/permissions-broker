@@ -41,6 +41,8 @@ const EnvSchema = z.object({
   GOOGLE_OAUTH_CLIENT_SECRET: z.string().min(1).optional(),
   GITHUB_OAUTH_CLIENT_ID: z.string().min(1).optional(),
   GITHUB_OAUTH_CLIENT_SECRET: z.string().min(1).optional(),
+  SPOTIFY_OAUTH_CLIENT_ID: z.string().min(1).optional(),
+  SPOTIFY_OAUTH_CLIENT_SECRET: z.string().min(1).optional(),
   PB_TEST_BYPASS_OAUTH: z.coerce
     .boolean()
     .optional()
