@@ -439,10 +439,30 @@ export function createBot(): Bot {
     });
   });
 
-  bot.callbackQuery(/c:connections:provider:(google|github|icloud)/, async (ctx) => {
+  function parseProviderIdFromCallbackData(
+    prefix: string,
+    data: string | undefined
+  ): SupportedProvider | null {
+    if (!data) return null;
+    if (!data.startsWith(prefix)) return null;
+    const id = data.slice(prefix.length);
+    if (!supportedProviders.includes(id as SupportedProvider)) return null;
+    return id as SupportedProvider;
+  }
+
+  bot.callbackQuery(/^c:connections:provider:/, async (ctx) => {
     if (!ctx.from) return;
     const userId = ensureUser(ctx.from.id);
-    const providerId = (ctx.match?.[1] ?? "") as SupportedProvider;
+    const providerId = parseProviderIdFromCallbackData(
+      "c:connections:provider:",
+      ctx.callbackQuery.data
+    );
+
+    if (!providerId) {
+      await ctx.answerCallbackQuery({ text: "unknown provider" });
+      return;
+    }
+
     const rendered = renderProviderDetails(userId, providerId);
 
     await ctx.answerCallbackQuery();
@@ -451,10 +471,18 @@ export function createBot(): Bot {
     });
   });
 
-  bot.callbackQuery(/c:connections:disconnect:(google|github|icloud)/, async (ctx) => {
+  bot.callbackQuery(/^c:connections:disconnect:/, async (ctx) => {
     if (!ctx.from) return;
     const userId = ensureUser(ctx.from.id);
-    const providerId = (ctx.match?.[1] ?? "") as SupportedProvider;
+    const providerId = parseProviderIdFromCallbackData(
+      "c:connections:disconnect:",
+      ctx.callbackQuery.data
+    );
+
+    if (!providerId) {
+      await ctx.answerCallbackQuery({ text: "unknown provider" });
+      return;
+    }
 
     db()
       .query(
@@ -469,10 +497,18 @@ export function createBot(): Bot {
     });
   });
 
-  bot.callbackQuery(/c:connections:reconnect:(google|github|icloud)/, async (ctx) => {
+  bot.callbackQuery(/^c:connections:reconnect:/, async (ctx) => {
     if (!ctx.from) return;
     const userId = ensureUser(ctx.from.id);
-    const providerId = (ctx.match?.[1] ?? "") as SupportedProvider;
+    const providerId = parseProviderIdFromCallbackData(
+      "c:connections:reconnect:",
+      ctx.callbackQuery.data
+    );
+
+    if (!providerId) {
+      await ctx.answerCallbackQuery({ text: "unknown provider" });
+      return;
+    }
 
     await ctx.answerCallbackQuery({ text: "link generated" });
 
@@ -493,10 +529,18 @@ export function createBot(): Bot {
     }
   });
 
-  bot.callbackQuery(/c:connect:(google|github|icloud)/, async (ctx) => {
+  bot.callbackQuery(/^c:connect:/, async (ctx) => {
     if (!ctx.from) return;
-    const providerId = ctx.match?.[1] ?? "";
     const userId = ensureUser(ctx.from.id);
+    const providerId = parseProviderIdFromCallbackData(
+      "c:connect:",
+      ctx.callbackQuery.data
+    );
+
+    if (!providerId) {
+      await ctx.answerCallbackQuery({ text: "unknown provider" });
+      return;
+    }
 
     await ctx.answerCallbackQuery({ text: "link generated" });
     await sendConnectLink({ ctx, userId, providerId });
