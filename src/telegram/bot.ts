@@ -13,9 +13,9 @@ import { buildAuthorizationUrl } from "../oauth/flow";
 import type { OAuthProviderConfig } from "../oauth/provider";
 import { getProvider } from "../oauth/registry";
 import { createOauthState } from "../oauth/state";
+import { upsertAlwaysAllowRule } from "../proxy/alwaysAllow";
 import type { ProxyProviderId } from "../proxy/provider";
 import { listProxyProviderIds } from "../proxy/providerRegistry";
-import { upsertAlwaysAllowRule } from "../proxy/alwaysAllow";
 import { decideProxyRequest } from "../proxy/requests";
 
 function nowIso(): string {
@@ -749,9 +749,10 @@ export function createBot(): Bot {
         .query(
           "SELECT upstream_url, method FROM proxy_requests WHERE id = ? AND user_id = ? LIMIT 1;"
         )
-        .get(requestId, userId) as
-        | { upstream_url: string; method: string }
-        | null;
+        .get(requestId, userId) as {
+        upstream_url: string;
+        method: string;
+      } | null;
 
       if (!row) {
         await ctx.answerCallbackQuery({ text: "Request not found" });

@@ -6,10 +6,11 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
-export function getAlwaysAllowKey(params: {
+export function getAlwaysAllowKey(params: { method: string; url: URL }): {
   method: string;
-  url: URL;
-}): { method: string; upstreamHost: string; upstreamPath: string } {
+  upstreamHost: string;
+  upstreamPath: string;
+} {
   const method = params.method.toUpperCase();
   // "Endpoint" means method + host + path (query is intentionally excluded).
   const upstreamHost = params.url.hostname;
@@ -28,9 +29,9 @@ export function hasAlwaysAllowRule(params: {
     .query(
       "SELECT id FROM proxy_always_allow_rules WHERE user_id = ? AND method = ? AND upstream_host = ? AND upstream_path = ? AND revoked_at IS NULL LIMIT 1;"
     )
-    .get(params.userId, k.method, k.upstreamHost, k.upstreamPath) as
-    | { id: string }
-    | null;
+    .get(params.userId, k.method, k.upstreamHost, k.upstreamPath) as {
+    id: string;
+  } | null;
 
   return Boolean(row);
 }
@@ -57,9 +58,9 @@ export function upsertAlwaysAllowRule(params: {
     .query(
       "SELECT id FROM proxy_always_allow_rules WHERE user_id = ? AND method = ? AND upstream_host = ? AND upstream_path = ? AND revoked_at IS NULL LIMIT 1;"
     )
-    .get(params.userId, k.method, k.upstreamHost, k.upstreamPath) as
-    | { id: string }
-    | null;
+    .get(params.userId, k.method, k.upstreamHost, k.upstreamPath) as {
+    id: string;
+  } | null;
 
   return { ruleId: row?.id ?? id };
 }
