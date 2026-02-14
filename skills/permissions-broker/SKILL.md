@@ -109,7 +109,7 @@ Guidelines:
       - Base64 format: standard RFC 4648 (`+`/`/`), not base64url.
       - Include padding (`=`) when in doubt.
       - Do not include `data:...;base64,` prefixes.
-  - optional `consent_hint`: plain-language reason for the user
+  - optional `consent_hint`: requester note shown to the user in Telegram. Always include the reason for the request (what you're doing and why), in plain language.
   - optional `idempotency_key`: reuse request id on retries
 
 Notes on forwarded headers:
@@ -383,7 +383,7 @@ Create session
 - JSON body:
   - `operation`: `"clone"`, `"fetch"`, `"pull"`, or `"push"`
   - `repo`: `"owner/repo"` (GitHub)
-  - optional `consent_hint`
+  - optional `consent_hint`: requester note shown to the user in Telegram. Always include the reason for the session (what you're doing and why).
 - Response: `{ "session_id": "...", "status": "PENDING_APPROVAL", "approval_expires_at": "..." }`
 
 Poll status
