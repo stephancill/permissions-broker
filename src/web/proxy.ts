@@ -7,6 +7,7 @@ import { requireApiKey } from "../auth/apiKey";
 import { decryptUtf8 } from "../crypto/aesgcm";
 import { db } from "../db/client";
 import { env } from "../env";
+import { OAuthTokenRefreshError } from "../oauth/flow";
 import { hasAlwaysAllowRule } from "../proxy/alwaysAllow";
 import { interpretProxyRequest } from "../proxy/interpret";
 import type { ProxyProvider } from "../proxy/provider";
@@ -596,9 +597,51 @@ proxyRouter.post("/requests/:id/execute", requireApiKey, async (c) => {
       return c.json({ error: "invalid_upstream_url", request_id: row.id }, 400);
     }
 
-    const authorization = await provider.getAuthorizationHeaderValue({
-      storedCredential,
-    });
+    let authorization: string;
+    try {
+      authorization = await provider.getAuthorizationHeaderValue({
+        storedCredential,
+      });
+    } catch (err) {
+      const now = new Date().toISOString();
+
+      if (err instanceof OAuthTokenRefreshError) {
+        const msg = [
+          `provider=${err.providerId}`,
+          err.status != null ? `status=${err.status}` : "",
+          err.oauthError ? `error=${err.oauthError}` : "",
+          err.oauthErrorDescription
+            ? `description=${err.oauthErrorDescription}`
+            : "",
+        ]
+          .filter(Boolean)
+          .join(" ");
+
+        db()
+          .query(
+            "UPDATE proxy_requests SET status = 'FAILED', updated_at = ?, error_code = 'OAUTH_REFRESH_FAILED', error_message = ? WHERE id = ?;"
+          )
+          .run(now, msg || err.message, row.id);
+
+        return c.json(
+          {
+            error: "oauth_refresh_failed",
+            provider: err.providerId,
+            status: err.status,
+            request_id: row.id,
+          },
+          502
+        );
+      }
+
+      const em = err instanceof Error ? err.message : String(err);
+      db()
+        .query(
+          "UPDATE proxy_requests SET status = 'FAILED', updated_at = ?, error_code = 'AUTH_FAILED', error_message = ? WHERE id = ?;"
+        )
+        .run(now, em, row.id);
+      return c.json({ error: "auth_failed", request_id: row.id }, 502);
+    }
 
     let reqHeaders: Record<string, string> = {};
     if (row.request_headers_json) {
