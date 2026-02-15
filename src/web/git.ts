@@ -207,7 +207,7 @@ gitRouter.post("/sessions", requireApiKey, async (c) => {
     } else {
       lines.push("<b>Operation</b>: <code>PUSH</code> (write)");
       lines.push(
-        "<i>Safety:</i> <code>Allow</code> blocks pushing to the repo default branch. Use <code>Allow (main)</code> to allow it."
+        "<i>Safety:</i> <code>Allow</code> blocks pushing to the repo default branch. Use <code>Allow (main branch)</code> to allow it."
       );
     }
 
@@ -231,7 +231,7 @@ gitRouter.post("/sessions", requireApiKey, async (c) => {
                   callback_data: `gs:approve_push_block:${created.sessionId}`,
                 },
                 {
-                  text: "Allow (main)",
+                  text: "Allow (main branch)",
                   callback_data: `gs:approve_push_allow:${created.sessionId}`,
                 },
               ],
