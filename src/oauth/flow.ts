@@ -67,6 +67,32 @@ export async function exchangeAuthorizationCode(params: {
   return oauth.processAuthorizationCodeResponse(as, client, response);
 }
 
+export class OAuthTokenRefreshError extends Error {
+  providerId: string;
+  tokenEndpoint: string;
+  status?: number;
+  oauthError?: string;
+  oauthErrorDescription?: string;
+
+  constructor(params: {
+    providerId: string;
+    tokenEndpoint: string;
+    status?: number;
+    oauthError?: string;
+    oauthErrorDescription?: string;
+    message: string;
+    cause?: unknown;
+  }) {
+    super(params.message, { cause: params.cause });
+    this.name = "OAuthTokenRefreshError";
+    this.providerId = params.providerId;
+    this.tokenEndpoint = params.tokenEndpoint;
+    this.status = params.status;
+    this.oauthError = params.oauthError;
+    this.oauthErrorDescription = params.oauthErrorDescription;
+  }
+}
+
 export async function refreshAccessToken(params: {
   provider: OAuthProviderConfig;
   refreshToken: string;
@@ -79,12 +105,55 @@ export async function refreshAccessToken(params: {
   const client: oauth.Client = { client_id: params.provider.clientId };
   const clientAuth = oauth.ClientSecretPost(params.provider.clientSecret);
 
-  const response = await oauth.refreshTokenGrantRequest(
-    as,
-    client,
-    clientAuth,
-    params.refreshToken
-  );
+  let response: Response;
+  try {
+    response = await oauth.refreshTokenGrantRequest(
+      as,
+      client,
+      clientAuth,
+      params.refreshToken
+    );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new OAuthTokenRefreshError({
+      providerId: params.provider.id,
+      tokenEndpoint: params.provider.tokenEndpoint,
+      message: `refresh_token_grant_request failed: ${msg}`,
+      cause: err,
+    });
+  }
 
-  return oauth.processRefreshTokenResponse(as, client, response);
+  try {
+    return oauth.processRefreshTokenResponse(as, client, response);
+  } catch (err) {
+    if (err instanceof oauth.ResponseBodyError) {
+      throw new OAuthTokenRefreshError({
+        providerId: params.provider.id,
+        tokenEndpoint: params.provider.tokenEndpoint,
+        status: err.status,
+        oauthError: err.error,
+        oauthErrorDescription: err.error_description,
+        message: `oauth token refresh failed: status=${err.status} error=${err.error}${err.error_description ? ` description=${err.error_description}` : ""}`,
+        cause: err,
+      });
+    }
+
+    if (err instanceof oauth.WWWAuthenticateChallengeError) {
+      throw new OAuthTokenRefreshError({
+        providerId: params.provider.id,
+        tokenEndpoint: params.provider.tokenEndpoint,
+        status: err.status,
+        message: `oauth token refresh failed: www-authenticate challenge status=${err.status}`,
+        cause: err,
+      });
+    }
+
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new OAuthTokenRefreshError({
+      providerId: params.provider.id,
+      tokenEndpoint: params.provider.tokenEndpoint,
+      message: `oauth token refresh failed: ${msg}`,
+      cause: err,
+    });
+  }
 }

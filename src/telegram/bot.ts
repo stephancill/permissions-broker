@@ -13,6 +13,7 @@ import { buildAuthorizationUrl } from "../oauth/flow";
 import type { OAuthProviderConfig } from "../oauth/provider";
 import { getProvider } from "../oauth/registry";
 import { createOauthState } from "../oauth/state";
+import { upsertAlwaysAllowRule } from "../proxy/alwaysAllow";
 import type { ProxyProviderId } from "../proxy/provider";
 import { listProxyProviderIds } from "../proxy/providerRegistry";
 import { decideProxyRequest } from "../proxy/requests";
@@ -729,7 +730,7 @@ export function createBot(): Bot {
     }
   });
 
-  bot.callbackQuery(/r:(approve|deny):(.+)/, async (ctx) => {
+  bot.callbackQuery(/r:(approve|deny|always_allow):(.+)/, async (ctx) => {
     if (!ctx.from) return;
     const action = ctx.match?.[1];
     const requestId = ctx.match?.[2];
@@ -741,7 +742,59 @@ export function createBot(): Bot {
       return;
     }
 
-    const decision = action === "approve" ? "approved" : "denied";
+    let alwaysAllowEnabled = false;
+
+    if (action === "always_allow") {
+      const row = db()
+        .query(
+          "SELECT upstream_url, method, api_key_id, requester_ip FROM proxy_requests WHERE id = ? AND user_id = ? LIMIT 1;"
+        )
+        .get(requestId, userId) as {
+        upstream_url: string;
+        method: string;
+        api_key_id: string;
+        requester_ip: string | null;
+      } | null;
+
+      if (!row) {
+        await ctx.answerCallbackQuery({ text: "Request not found" });
+        return;
+      }
+
+      if (!row.requester_ip) {
+        await ctx.answerCallbackQuery({
+          text: "missing requester IP (cannot scope always-allow)",
+        });
+        return;
+      }
+
+      const { ruleId } = upsertAlwaysAllowRule({
+        userId,
+        apiKeyId: row.api_key_id,
+        requesterIp: row.requester_ip,
+        method: row.method,
+        url: new URL(row.upstream_url),
+      });
+
+      auditEvent({
+        userId,
+        requestId,
+        actorType: "telegram",
+        actorId: String(ctx.from.id),
+        eventType: "proxy_always_allow_created",
+        event: {
+          rule_id: ruleId,
+          api_key_id: row.api_key_id,
+          requester_ip: row.requester_ip,
+          method: row.method,
+          upstream_url: row.upstream_url,
+        },
+      });
+
+      alwaysAllowEnabled = true;
+    }
+
+    const decision = action === "deny" ? "denied" : "approved";
     const telegramChatId = "chat" in msg ? msg.chat.id : ctx.from.id;
     const res = decideProxyRequest({
       requestId,
@@ -785,15 +838,21 @@ export function createBot(): Bot {
       event: {},
     });
 
-    await ctx.answerCallbackQuery({ text: decision });
+    await ctx.answerCallbackQuery({
+      text: alwaysAllowEnabled ? "approved (always allow)" : decision,
+    });
 
     // Update the approval message to reflect the decision and remove buttons.
     try {
       if ("text" in msg && typeof msg.text === "string") {
-        await ctx.editMessageText(
-          renderApprovalDecisionText({ originalText: msg.text, decision }),
-          { parse_mode: "HTML" }
-        );
+        const base = renderApprovalDecisionText({
+          originalText: msg.text,
+          decision,
+        });
+        const note = alwaysAllowEnabled
+          ? `\n\nAlways allow: ENABLED for this endpoint (<code>${escapeHtml(nowIso())}</code>)`
+          : "";
+        await ctx.editMessageText(`${base}${note}`, { parse_mode: "HTML" });
       }
       await ctx.editMessageReplyMarkup({ reply_markup: new InlineKeyboard() });
     } catch {

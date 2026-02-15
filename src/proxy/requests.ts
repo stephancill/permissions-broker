@@ -12,6 +12,7 @@ export async function createProxyRequest(params: {
   userId: string;
   apiKeyId: string;
   apiKeyLabelSnapshot: string;
+  requesterIp?: string;
   upstreamUrl: string;
   method: string;
   headers?: Record<string, string>;
@@ -81,14 +82,15 @@ export async function createProxyRequest(params: {
 
   db()
     .query(
-      "INSERT INTO proxy_requests (id, user_id, api_key_id, api_key_label_snapshot, upstream_url, method, request_headers_json, request_body_base64, request_hash, consent_hint, status, created_at, updated_at, approval_expires_at, idempotency_key, upstream_http_status, upstream_content_type, upstream_bytes, result_state, error_code, error_message) " +
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, 'NONE', NULL, NULL);"
+      "INSERT INTO proxy_requests (id, user_id, api_key_id, api_key_label_snapshot, requester_ip, upstream_url, method, request_headers_json, request_body_base64, request_hash, consent_hint, status, created_at, updated_at, approval_expires_at, idempotency_key, upstream_http_status, upstream_content_type, upstream_bytes, result_state, error_code, error_message) " +
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, 'NONE', NULL, NULL);"
     )
     .run(
       requestId,
       params.userId,
       params.apiKeyId,
       params.apiKeyLabelSnapshot,
+      params.requesterIp ?? null,
       canonicalUrl,
       method,
       JSON.stringify(canonicalHeaders),
