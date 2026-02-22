@@ -116,6 +116,11 @@ function methodAllowed(path: string, method: string): boolean {
   return false;
 }
 
+function isBodyTooLargeError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  return err.message === "body_too_large";
+}
+
 function serviceFromQuery(query: string): string | null {
   const u = new URL(
     `https://x.invalid${query.startsWith("?") ? query : `?${query}`}`
@@ -334,6 +339,9 @@ gitRouter.get("/sessions/:id/remote", requireApiKey, async (c) => {
 
 // Git CLI proxy endpoints
 gitRouter.all("/session/:id/:secret/github/:owner/:repo/*", async (c) => {
+  const requestId = crypto.randomUUID().slice(0, 8);
+  console.error(`[git-proxy:${requestId}] start ${c.req.method} ${c.req.url}`);
+
   const sessionId = c.req.param("id");
   const secret = c.req.param("secret");
   const owner = c.req.param("owner");
@@ -356,7 +364,15 @@ gitRouter.all("/session/:id/:secret/github/:owner/:repo/*", async (c) => {
   }
 
   const sess = await validateGitSessionSecret({ sessionId, secret });
-  if (!sess) return c.text("forbidden", 403);
+  if (!sess) {
+    console.error(
+      `[git-proxy:${requestId}] session not found or invalid secret`
+    );
+    return c.text("forbidden", 403);
+  }
+  console.error(
+    `[git-proxy:${requestId}] session valid status=${sess.status} operation=${sess.operation}`
+  );
   if (sess.provider !== "github") return c.text("forbidden", 403);
   if (sess.repo_owner !== owner || sess.repo_name !== repo)
     return c.text("forbidden", 403);
@@ -403,14 +419,6 @@ gitRouter.all("/session/:id/:secret/github/:owner/:repo/*", async (c) => {
     return c.text("forbidden", 403);
 
   touchGitSessionActivity(sess.id);
-
-  // For push, enforce one-time use by flipping to USED on the first
-  // receive-pack request.
-  // For clone/fetch, Git protocol v2 may issue multiple upload-pack POSTs
-  // (ls-refs, then fetch), so we can't mark USED on upload-pack.
-  if (path === "/git-receive-pack") {
-    markGitSessionUsed(sess.id);
-  }
 
   const token = await getGitHubToken(sess.user_id);
   if (!token && sess.operation === "push") {
@@ -489,15 +497,33 @@ gitRouter.all("/session/:id/:secret/github/:owner/:repo/*", async (c) => {
   // GitHub's smart HTTP endpoints are sensitive to transfer encoding.
   // Buffer request bodies up to a hard cap and forward with Content-Length.
   // This keeps implementation simple and avoids chunked upload surprises.
-  const bodyBytes = await readBodyBytes({
-    body,
-    maxBytes: 50 * 1024 * 1024,
-  });
+  let bodyBytes: Uint8Array | null = null;
+  const bodyReadStart = Date.now();
+  try {
+    bodyBytes = await readBodyBytes({
+      body,
+      maxBytes: 50 * 1024 * 1024,
+    });
+    console.error(
+      `[git-proxy:${requestId}] body read done bytes=${bodyBytes?.byteLength ?? 0} time=${Date.now() - bodyReadStart}ms`
+    );
+  } catch (err) {
+    if (isBodyTooLargeError(err)) {
+      console.error(`[git-proxy:${requestId}] body too large limit=50MB`);
+      return c.text("request body too large", 413);
+    }
+    console.error(`[git-proxy:${requestId}] body read error err=${err}`);
+    return c.text("invalid request body", 400);
+  }
   if (bodyBytes) headers.set("content-length", String(bodyBytes.byteLength));
 
   const ctrl = new AbortController();
   const timeout = setTimeout(() => ctrl.abort(), 10 * 60_000);
   let res: Response;
+  const fetchStart = Date.now();
+  console.error(
+    `[git-proxy:${requestId}] fetch start upstream=${upstream} bodyBytes=${bodyBytes?.byteLength ?? 0}`
+  );
   try {
     res = await fetch(upstream, {
       method: c.req.method,
@@ -505,8 +531,29 @@ gitRouter.all("/session/:id/:secret/github/:owner/:repo/*", async (c) => {
       body: bodyBytes as unknown as RequestInit["body"],
       signal: ctrl.signal,
     });
+    console.error(
+      `[git-proxy:${requestId}] fetch done status=${res.status} time=${Date.now() - fetchStart}ms`
+    );
+  } catch (err) {
+    const isAbort =
+      (err instanceof DOMException && err.name === "AbortError") ||
+      (err instanceof Error && err.name === "AbortError");
+    console.error(
+      `[git-proxy:${requestId}] fetch error err=${err} isAbort=${isAbort}`
+    );
+    return c.text(
+      isAbort ? "upstream timeout" : "upstream unavailable",
+      isAbort ? 504 : 502
+    );
   } finally {
     clearTimeout(timeout);
+  }
+
+  // For push, enforce one-time use only after upstream accepted the
+  // receive-pack request. This avoids burning sessions on transient
+  // network/edge failures before the request reaches GitHub.
+  if (path === "/git-receive-pack" && res.ok) {
+    markGitSessionUsed(sess.id);
   }
 
   if (path === "/info/refs" && sess.operation === "push") {
