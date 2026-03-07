@@ -97,11 +97,25 @@ For unsupported hosts, explain that provider support must be added first.
 
 ## Git Smart-HTTP (Separate from /v1/proxy)
 
-Use these endpoints for clone/fetch/pull/push approval flows:
+Use the bundled git-like CLI:
 
-1. `POST /v1/git/sessions`
-2. `GET /v1/git/sessions/:id`
-3. `GET /v1/git/sessions/:id/remote`
+- `skills/permissions-broker/scripts/pb_git.py`
+
+It is a drop-in wrapper for these workflows:
+
+- `clone`
+- `fetch`
+- `pull`
+- `push`
+
+Examples:
+
+```bash
+python3 skills/permissions-broker/scripts/pb_git.py clone https://github.com/OWNER/REPO.git
+python3 skills/permissions-broker/scripts/pb_git.py fetch origin --prune
+python3 skills/permissions-broker/scripts/pb_git.py pull origin main
+python3 skills/permissions-broker/scripts/pb_git.py push origin HEAD:refs/heads/feature-x
+```
 
 Notes:
 
