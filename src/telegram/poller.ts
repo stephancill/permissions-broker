@@ -26,11 +26,20 @@ export async function startTelegramPoller(bot: Bot): Promise<void> {
     });
 
     for (const u of updates) {
-      await bot.handleUpdate(u);
-      lastUpdateId = u.update_id;
-      db()
-        .query("UPDATE telegram_state SET last_update_id = ? WHERE id = 1;")
-        .run(lastUpdateId);
+      try {
+        await bot.handleUpdate(u);
+      } catch (err) {
+        console.error(
+          "telegram update handling failed",
+          { updateId: u.update_id },
+          err
+        );
+      } finally {
+        lastUpdateId = u.update_id;
+        db()
+          .query("UPDATE telegram_state SET last_update_id = ? WHERE id = 1;")
+          .run(lastUpdateId);
+      }
     }
   }
 }

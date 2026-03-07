@@ -1,4 +1,4 @@
-import { Bot, InlineKeyboard } from "grammy";
+import { Bot, type Context, GrammyError, InlineKeyboard } from "grammy";
 import * as oauth from "oauth4webapi";
 import { ulid } from "ulid";
 
@@ -210,6 +210,26 @@ function escapeHtml(s: string): string {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+}
+
+function isStaleCallbackQueryError(err: unknown): boolean {
+  if (!(err instanceof GrammyError)) return false;
+  if (err.method !== "answerCallbackQuery") return false;
+  if (err.error_code !== 400) return false;
+
+  return /query is too old|query ID is invalid/i.test(err.description);
+}
+
+async function answerCallbackQuerySafe(
+  ctx: Pick<Context, "answerCallbackQuery">,
+  payload?: Parameters<Context["answerCallbackQuery"]>[0]
+): Promise<void> {
+  try {
+    await ctx.answerCallbackQuery(payload);
+  } catch (err) {
+    if (isStaleCallbackQueryError(err)) return;
+    throw err;
+  }
 }
 
 function renderOneTimeKeyMessage(params: {
@@ -738,7 +758,7 @@ export function createBot(): Bot {
 
     const msg = ctx.callbackQuery.message;
     if (!msg || !("message_id" in msg)) {
-      await ctx.answerCallbackQuery({ text: "Missing message" });
+      await answerCallbackQuerySafe(ctx, { text: "Missing message" });
       return;
     }
 
@@ -757,12 +777,12 @@ export function createBot(): Bot {
       } | null;
 
       if (!row) {
-        await ctx.answerCallbackQuery({ text: "Request not found" });
+        await answerCallbackQuerySafe(ctx, { text: "Request not found" });
         return;
       }
 
       if (!row.requester_ip) {
-        await ctx.answerCallbackQuery({
+        await answerCallbackQuerySafe(ctx, {
           text: "missing requester IP (cannot scope always-allow)",
         });
         return;
@@ -806,7 +826,7 @@ export function createBot(): Bot {
     });
 
     if (!res.ok) {
-      await ctx.answerCallbackQuery({ text: res.reason });
+      await answerCallbackQuerySafe(ctx, { text: res.reason });
 
       // Best-effort message update for common cases.
       if (res.reason === "expired") {
@@ -838,7 +858,7 @@ export function createBot(): Bot {
       event: {},
     });
 
-    await ctx.answerCallbackQuery({
+    await answerCallbackQuerySafe(ctx, {
       text: alwaysAllowEnabled ? "approved (always allow)" : decision,
     });
 
@@ -877,7 +897,7 @@ export function createBot(): Bot {
 
       const msg = ctx.callbackQuery.message;
       if (!msg || !("message_id" in msg)) {
-        await ctx.answerCallbackQuery({ text: "Missing message" });
+        await answerCallbackQuerySafe(ctx, { text: "Missing message" });
         return;
       }
 
@@ -891,7 +911,7 @@ export function createBot(): Bot {
             eventType: "git_session_denied",
             event: { sessionId },
           });
-          await ctx.answerCallbackQuery({ text: "denied" });
+          await answerCallbackQuerySafe(ctx, { text: "denied" });
         } else if (action === "approve_clone") {
           setGitSessionStatus({ sessionId, userId, status: "APPROVED" });
           auditEvent({
@@ -901,7 +921,7 @@ export function createBot(): Bot {
             eventType: "git_session_approved",
             event: { sessionId, operation },
           });
-          await ctx.answerCallbackQuery({ text: "approved" });
+          await answerCallbackQuerySafe(ctx, { text: "approved" });
         } else if (action === "approve_push_block") {
           setGitSessionStatus({
             sessionId,
@@ -920,7 +940,7 @@ export function createBot(): Bot {
               allowDefaultBranchPush: false,
             },
           });
-          await ctx.answerCallbackQuery({ text: "approved" });
+          await answerCallbackQuerySafe(ctx, { text: "approved" });
         } else if (action === "approve_push_allow") {
           setGitSessionStatus({
             sessionId,
@@ -939,7 +959,7 @@ export function createBot(): Bot {
               allowDefaultBranchPush: true,
             },
           });
-          await ctx.answerCallbackQuery({ text: "approved" });
+          await answerCallbackQuerySafe(ctx, { text: "approved" });
         }
 
         try {
@@ -958,7 +978,7 @@ export function createBot(): Bot {
         }
       } catch (err) {
         const em = err instanceof Error ? err.message : String(err);
-        await ctx.answerCallbackQuery({ text: em });
+        await answerCallbackQuerySafe(ctx, { text: em });
       }
     }
   );
