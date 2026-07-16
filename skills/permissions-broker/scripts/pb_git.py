@@ -13,7 +13,7 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any
 
-DEFAULT_BASE_URL = "https://permissions-broker.steer.fun"
+DEFAULT_BASE_URL = "https://permissions-broker.stupidtech.net"
 USER_AGENT = "permissions-broker-git-cli/1.0"
 SUPPORTED = {"clone", "fetch", "pull", "push"}
 
@@ -30,7 +30,7 @@ Usage:
 
 PB options:
   --pb-api-key <key>           Permissions Broker API key (default: $PB_API_KEY)
-  --pb-base-url <url>          Broker base URL (default: https://permissions-broker.steer.fun)
+  --pb-base-url <url>          Broker base URL (default: https://permissions-broker.stupidtech.net)
   --pb-timeout-seconds <n>     Approval polling timeout in seconds (default: 90)
   --pb-poll-interval <n>       Poll interval in seconds (default: 1)
   --pb-consent-hint <text>     Consent hint shown in Telegram

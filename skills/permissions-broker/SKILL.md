@@ -44,7 +44,7 @@ This script handles the full flow for `/v1/proxy`:
 - `PB_API_KEY` env var (or `--pb-api-key`)
 - Curl-like request args (URL + optional `-X`, `-H`, `-d`, `-G`)
 
-The CLI uses `https://permissions-broker.steer.fun` by default.
+The CLI uses `https://permissions-broker.stupidtech.net` by default.
 
 ### Example
 

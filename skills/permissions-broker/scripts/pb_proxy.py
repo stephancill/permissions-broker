@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import Any
 
 USER_AGENT = "permissions-broker-cli/1.0"
-DEFAULT_BASE_URL = "https://permissions-broker.steer.fun"
+DEFAULT_BASE_URL = "https://permissions-broker.stupidtech.net"
 
 
 def eprint(*args: object) -> None:
@@ -31,7 +31,7 @@ PB options:
   --pb-poll-interval <n>       Poll interval in seconds (default: 1)
   --pb-consent-hint <text>     Consent hint shown in Telegram
   --pb-idempotency-key <key>   Idempotency key for create request
-  --pb-base-url <url>          Broker URL (default: https://permissions-broker.steer.fun)
+  --pb-base-url <url>          Broker URL (default: https://permissions-broker.stupidtech.net)
   -h, --help                   Show this help
 
 Curl options supported:
