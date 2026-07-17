@@ -12,6 +12,7 @@ Telegram-controlled permissions gate + proxy API for third-party providers.
 - GitHub
 - iCloud (CalDAV)
 - Spotify
+- Cloudflare
 
 ## Agent skill
 
@@ -84,6 +85,7 @@ In Telegram (to your bot):
 - `/connect google` (generates Google OAuth link)
 - `/connect github` (generates GitHub OAuth link)
 - `/connect spotify` (generates Spotify OAuth link)
+- `/connect cloudflare` (opens a token form; create a narrow Cloudflare API token first)
 - `/keys` (rename/revoke/rotate keys)
 
 ## Public API

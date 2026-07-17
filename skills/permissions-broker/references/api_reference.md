@@ -76,6 +76,7 @@ Connected services
     - `status`
     - other non-secret metadata
     - for iCloud, the broker may include CalDAV discovery bounds (hostnames + path prefixes) to help agents form valid requests
+    - for Cloudflare, the broker may include non-secret account IDs/names to help agents form Wrangler-compatible requests
 
 ## Upstream URL Rules (MVP)
 
@@ -84,6 +85,8 @@ Connected services
   - Google: `www.googleapis.com`, `docs.googleapis.com`, `sheets.googleapis.com`
   - GitHub: `api.github.com`
   - iCloud (CalDAV): discovered on connect (starts at `caldav.icloud.com`)
+  - Spotify: `api.spotify.com`
+  - Cloudflare: `api.cloudflare.com/client/v4/*`
 
 Provider selection
 
@@ -101,6 +104,7 @@ Practical guidance
 
 - Prefer small, targeted responses; always use `fields` where supported.
 - Prefer paginated list endpoints with small page sizes.
+- For Cloudflare/Wrangler-style workflows, use the Cloudflare v4 REST API through `https://api.cloudflare.com/client/v4/...`; never pass an upstream `authorization` header.
 
 ## Useful Google API URL Patterns
 

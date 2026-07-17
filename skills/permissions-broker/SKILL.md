@@ -1,6 +1,6 @@
 ---
 name: permissions-broker
-description: Use the Permissions Broker for approval-gated external API access and Git smart-HTTP operations when local credentials are unavailable or not desired. Use the bundled Python CLI at skills/permissions-broker/scripts/pb_proxy.py for proxy requests (create, poll, execute) instead of hand-writing polling logic. Supports Google, GitHub, iCloud CALDAV, and Spotify.
+description: Use the Permissions Broker for approval-gated external API access and Git smart-HTTP operations when local credentials are unavailable or not desired. Use the bundled Python CLI at skills/permissions-broker/scripts/pb_proxy.py for proxy requests (create, poll, execute) instead of hand-writing polling logic. Supports Google, GitHub, iCloud CALDAV, Spotify, and Cloudflare.
 ---
 
 # Permissions Broker
@@ -92,6 +92,7 @@ Never include upstream `authorization` headers; broker injects OAuth.
 - GitHub: `api.github.com`
 - iCloud CALDAV: discovered during connect flow
 - Spotify: `api.spotify.com`
+- Cloudflare: `api.cloudflare.com/client/v4/*`
 
 For unsupported hosts, explain that provider support must be added first.
 

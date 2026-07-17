@@ -382,14 +382,14 @@ export function createBot(): Bot {
       );
     }
 
-    if (params.providerId === "icloud") {
+    if (params.providerId === "icloud" || params.providerId === "cloudflare") {
       const { state } = createConnectState({
         userId: params.userId,
-        provider: "icloud",
+        provider: params.providerId,
         ttlMs: 10 * 60_000,
       });
       const base = env.APP_BASE_URL.replace(/\/$/, "");
-      return `${base}/v1/accounts/connect/icloud?state=${encodeURIComponent(state)}`;
+      return `${base}/v1/accounts/connect/${params.providerId}?state=${encodeURIComponent(state)}`;
     }
 
     let provider: OAuthProviderConfig;

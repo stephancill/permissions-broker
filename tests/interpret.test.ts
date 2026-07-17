@@ -45,6 +45,16 @@ describe("interpretProxyRequest", () => {
     expect(out.details.join("\n")).toContain("spreadsheetId: s123");
   });
 
+  test("interprets Cloudflare Worker deploy", () => {
+    const url = new URL(
+      "https://api.cloudflare.com/client/v4/accounts/acct123/workers/scripts/my-worker"
+    );
+    const out = interpretProxyRequest({ url, method: "PUT" });
+    expect(out.summary).toBe("Deploy Cloudflare Worker script");
+    expect(out.details.join("\n")).toContain("account: acct123");
+    expect(out.details.join("\n")).toContain("script: my-worker");
+  });
+
   test("interprets iCloud REPORT time-range", () => {
     const url = new URL("https://caldav.icloud.com/123/calendars/abc/");
     const body = `<?xml version="1.0" encoding="UTF-8"?>

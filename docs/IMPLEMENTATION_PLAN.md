@@ -316,3 +316,8 @@ Implementation notes:
 - Upstream response bodies are not persisted; if a client needs the body again it must create a new request and be re-approved.
 - OAuth is designed to be generic, but providers may require per-provider quirks.
 - Dropping operation allowlists makes the proxy more flexible, but pushes safety into host boundaries, method boundaries (GET only), and user approvals.
+
+## Post-MVP Implementation Notes
+
+- Added Cloudflare as a token-backed proxy provider for `https://api.cloudflare.com/client/v4/*` so agents can perform Wrangler-style Cloudflare API operations through Telegram approvals.
+- Added a broker-hosted `/v1/accounts/connect/cloudflare` form that verifies the Cloudflare API token, stores it encrypted, and exposes only non-secret account metadata via `GET /v1/accounts/`.
