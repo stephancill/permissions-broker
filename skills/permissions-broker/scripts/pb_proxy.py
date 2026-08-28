@@ -26,13 +26,14 @@ Usage:
   pb_proxy.py [pb options] [curl options] <upstream_url>
 
 PB options:
-  --pb-api-key <key>           Permissions Broker API key (default: $PB_API_KEY)
   --pb-timeout-seconds <n>     Approval polling timeout in seconds (default: 30)
   --pb-poll-interval <n>       Poll interval in seconds (default: 1)
   --pb-consent-hint <text>     Consent hint shown in Telegram
   --pb-idempotency-key <key>   Idempotency key for create request
   --pb-base-url <url>          Broker URL (default: https://permissions-broker.stupidtech.net)
   -h, --help                   Show this help
+
+Requires $PB_API_KEY (Permissions Broker API key) in the environment.
 
 Curl options supported:
   -X, --request <method>
@@ -91,9 +92,6 @@ def parse_pb_options(argv: list[str]) -> tuple[PbConfig, list[str]]:
         if arg in ("-h", "--help"):
             print(usage())
             raise SystemExit(0)
-        if arg == "--pb-api-key":
-            cfg.api_key, i = pop_value(argv, i, arg)
-            continue
         if arg == "--pb-timeout-seconds":
             v, i = pop_value(argv, i, arg)
             cfg.timeout_seconds = float(v)
@@ -315,7 +313,8 @@ def main() -> int:
         return 0
 
     if not pb_cfg.api_key:
-        eprint("missing API key: set PB_API_KEY or pass --pb-api-key")
+        eprint("missing API key: set PB_API_KEY in the environment")
+        eprint("Run with --help for usage.")
         return 12
 
     consent_hint = pb_cfg.consent_hint

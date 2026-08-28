@@ -28,8 +28,10 @@ def usage() -> str:
 Usage:
   pb_git.py [pb options] <clone|fetch|pull|push> [git args...]
 
+Requires:
+  $PB_API_KEY                  Permissions Broker API key (env var)
+
 PB options:
-  --pb-api-key <key>           Permissions Broker API key (default: $PB_API_KEY)
   --pb-base-url <url>          Broker base URL (default: https://permissions-broker.stupidtech.net)
   --pb-timeout-seconds <n>     Approval polling timeout in seconds (default: 90)
   --pb-poll-interval <n>       Poll interval in seconds (default: 1)
@@ -74,9 +76,6 @@ def parse_pb_options(argv: list[str]) -> tuple[PbConfig, list[str]]:
         if arg in ("-h", "--help"):
             print(usage())
             raise SystemExit(0)
-        if arg == "--pb-api-key":
-            cfg.api_key, i = pop_value(argv, i, arg)
-            continue
         if arg == "--pb-base-url":
             cfg.base_url, i = pop_value(argv, i, arg)
             continue
@@ -221,7 +220,7 @@ def create_git_session(cfg: PbConfig, operation: str, repo: str) -> str:
         "consent_hint": consent,
     }
 
-    status, data, raw = http_json("POST", url, cfg.api_key or "", payload)
+    status, data, raw = http_json("POST", url, cfg.api_key, payload)
     if status != 200:
         if raw:
             sys.stdout.write(raw)
@@ -241,7 +240,7 @@ def wait_for_approval(cfg: PbConfig, session_id: str) -> None:
     deadline = time.monotonic() + cfg.timeout_seconds
 
     while True:
-        _, data, raw = http_json("GET", url, cfg.api_key or "")
+        _, data, raw = http_json("GET", url, cfg.api_key)
         status = str(data.get("status", ""))
         if status == "APPROVED":
             return
@@ -261,7 +260,7 @@ def wait_for_approval(cfg: PbConfig, session_id: str) -> None:
 
 def get_remote_url(cfg: PbConfig, session_id: str) -> str:
     url = f"{cfg.base_url.rstrip('/')}/v1/git/sessions/{session_id}/remote"
-    status, data, raw = http_json("GET", url, cfg.api_key or "")
+    status, data, raw = http_json("GET", url, cfg.api_key)
     if status != 200:
         if raw:
             sys.stdout.write(raw)
@@ -306,7 +305,8 @@ def main() -> int:
         return 0
 
     if not cfg.api_key:
-        eprint("missing API key: set PB_API_KEY or pass --pb-api-key")
+        eprint("missing API key: set PB_API_KEY in the environment")
+        eprint("Run with --help for usage.")
         return 12
     if not rest:
         eprint("missing git subcommand")
