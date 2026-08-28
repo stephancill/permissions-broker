@@ -129,11 +129,12 @@ function serviceFromQuery(query: string): string | null {
 }
 
 async function getGitHubToken(userId: string): Promise<string | null> {
-  const row = db()
+  const database = await db();
+  const row = (await database
     .query(
       "SELECT refresh_token_ciphertext FROM linked_accounts WHERE user_id = ? AND provider = 'github' AND status = 'active' LIMIT 1;"
     )
-    .get(userId) as { refresh_token_ciphertext: Uint8Array } | null;
+    .get(userId)) as { refresh_token_ciphertext: Uint8Array } | null;
   if (!row) return null;
   return decryptUtf8(row.refresh_token_ciphertext);
 }
@@ -149,11 +150,12 @@ gitRouter.post("/sessions", requireApiKey, async (c) => {
 
   // GitHub token is required for push. For clone of public repos,
   // allow unauthenticated proxying.
-  const connected = db()
+  const database = await db();
+  const connected = (await database
     .query(
       "SELECT 1 AS ok FROM linked_accounts WHERE user_id = ? AND provider = 'github' AND status = 'active' LIMIT 1;"
     )
-    .get(auth.userId) as { ok: number } | null;
+    .get(auth.userId)) as { ok: number } | null;
   if (!connected && parsed.data.operation === "push") {
     return c.json({ error: "no_linked_github" }, 409);
   }
@@ -176,7 +178,7 @@ gitRouter.post("/sessions", requireApiKey, async (c) => {
     approvalTtlMs: 2 * 60_000,
   });
 
-  auditEvent({
+  await auditEvent({
     userId: auth.userId,
     actorType: "api_key",
     actorId: auth.apiKeyId,
@@ -188,9 +190,9 @@ gitRouter.post("/sessions", requireApiKey, async (c) => {
   });
 
   // Telegram prompt
-  const u = db()
+  const u = (await database
     .query("SELECT telegram_user_id FROM users WHERE id = ?;")
-    .get(auth.userId) as { telegram_user_id: number } | null;
+    .get(auth.userId)) as { telegram_user_id: number } | null;
 
   if (u?.telegram_user_id && env.TELEGRAM_BOT_TOKEN) {
     const consentHint = parsed.data.consent_hint;
@@ -255,7 +257,7 @@ gitRouter.post("/sessions", requireApiKey, async (c) => {
             ],
           };
 
-    telegramApi()
+    await telegramApi()
       .sendMessage(u.telegram_user_id, lines.join("\n"), {
         reply_markup: kb,
         parse_mode: "HTML",
@@ -270,10 +272,10 @@ gitRouter.post("/sessions", requireApiKey, async (c) => {
   });
 });
 
-gitRouter.get("/sessions/:id", requireApiKey, (c) => {
+gitRouter.get("/sessions/:id", requireApiKey, async (c) => {
   const auth = c.get("apiKeyAuth");
   const sessionId = c.req.param("id");
-  const row = getGitSessionKeyScoped({
+  const row = await getGitSessionKeyScoped({
     sessionId,
     userId: auth.userId,
     apiKeyId: auth.apiKeyId,
@@ -309,7 +311,7 @@ gitRouter.get("/sessions/:id", requireApiKey, (c) => {
 gitRouter.get("/sessions/:id/remote", requireApiKey, async (c) => {
   const auth = c.get("apiKeyAuth");
   const sessionId = c.req.param("id");
-  const row = getGitSessionKeyScoped({
+  const row = await getGitSessionKeyScoped({
     sessionId,
     userId: auth.userId,
     apiKeyId: auth.apiKeyId,
@@ -326,7 +328,7 @@ gitRouter.get("/sessions/:id/remote", requireApiKey, async (c) => {
 
   if (!env.APP_SECRET) return c.json({ error: "server_misconfigured" }, 500);
 
-  const ct = getGitSessionSecretCiphertextKeyScoped({
+  const ct = await getGitSessionSecretCiphertextKeyScoped({
     sessionId,
     userId: auth.userId,
     apiKeyId: auth.apiKeyId,
@@ -391,7 +393,8 @@ gitRouter.all("/session/:id/:secret/github/:owner/:repo/*", async (c) => {
   }
 
   if (sess.status === "APPROVED") {
-    db()
+    const database = await db();
+    await database
       .query(
         "UPDATE git_sessions SET status = 'ACTIVE', updated_at = ? WHERE id = ? AND status = 'APPROVED';"
       )
@@ -418,7 +421,7 @@ gitRouter.all("/session/:id/:secret/github/:owner/:repo/*", async (c) => {
   if (sess.operation === "push" && path === "/git-upload-pack")
     return c.text("forbidden", 403);
 
-  touchGitSessionActivity(sess.id);
+  await touchGitSessionActivity(sess.id);
 
   const token = await getGitHubToken(sess.user_id);
   if (!token && sess.operation === "push") {
@@ -553,7 +556,7 @@ gitRouter.all("/session/:id/:secret/github/:owner/:repo/*", async (c) => {
   // receive-pack request. This avoids burning sessions on transient
   // network/edge failures before the request reaches GitHub.
   if (path === "/git-receive-pack" && res.ok) {
-    markGitSessionUsed(sess.id);
+    await markGitSessionUsed(sess.id);
   }
 
   if (path === "/info/refs" && sess.operation === "push") {
@@ -561,7 +564,8 @@ gitRouter.all("/session/:id/:secret/github/:owner/:repo/*", async (c) => {
     try {
       const buf = new Uint8Array(await res.clone().arrayBuffer());
       const headRef = extractSymrefHeadFromInfoRefs(buf.slice(0, 64 * 1024));
-      if (headRef) storeDefaultBranchRef({ sessionId: sess.id, ref: headRef });
+      if (headRef)
+        await storeDefaultBranchRef({ sessionId: sess.id, ref: headRef });
     } catch {
       // ignore
     }

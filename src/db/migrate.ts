@@ -1,22 +1,23 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { type AppDb, setAppDatabase } from "./client";
 import { openDb } from "./db";
 
 function nowIso(): string {
   return new Date().toISOString();
 }
 
-function ensureSchemaMigrations(db: ReturnType<typeof openDb>) {
-  db.exec(
+async function ensureSchemaMigrations(db: AppDb) {
+  await db.exec(
     "CREATE TABLE IF NOT EXISTS schema_migrations (id TEXT PRIMARY KEY, applied_at TEXT NOT NULL);"
   );
 }
 
-function getApplied(db: ReturnType<typeof openDb>): Set<string> {
-  const rows = db
+async function getApplied(db: AppDb): Promise<Set<string>> {
+  const rows = (await db
     .query("SELECT id FROM schema_migrations ORDER BY id;")
-    .all() as {
+    .all()) as {
     id: string;
   }[];
   return new Set(rows.map((r) => r.id));
@@ -40,11 +41,12 @@ function isIgnorableMigrationError(err: unknown, file: string): boolean {
   return false;
 }
 
-export function migrate(): void {
-  const db = openDb();
-  ensureSchemaMigrations(db);
+export async function migrate(): Promise<void> {
+  const db = await openDb();
+  setAppDatabase(db);
+  await ensureSchemaMigrations(db);
 
-  const applied = getApplied(db);
+  const applied = await getApplied(db);
   const migrationsDir = join(import.meta.dir, "..", "..", "migrations");
 
   const files = readdirSync(migrationsDir)
@@ -56,21 +58,21 @@ export function migrate(): void {
 
     const sql = readFileSync(join(migrationsDir, file), "utf8");
 
-    db.transaction(() => {
+    await db.transaction(async () => {
       try {
-        db.exec(sql);
+        await db.exec(sql);
       } catch (err) {
         if (!isIgnorableMigrationError(err, file)) throw err;
       }
 
-      db.query(
-        "INSERT INTO schema_migrations (id, applied_at) VALUES (?, ?);"
-      ).run(file, nowIso());
-    })();
+      await db
+        .query("INSERT INTO schema_migrations (id, applied_at) VALUES (?, ?);")
+        .run(file, nowIso());
+    });
   }
 }
 
 if (import.meta.main) {
-  migrate();
+  await migrate();
   console.log("migrations applied");
 }

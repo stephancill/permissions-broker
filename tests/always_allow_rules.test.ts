@@ -15,20 +15,22 @@ function nowIso(): string {
 }
 
 // Create schema once for this test file.
-migrate();
+await migrate();
 
 async function setupDb() {
-  db().exec("DELETE FROM approvals;");
-  db().exec("DELETE FROM proxy_requests;");
-  db().exec("DELETE FROM proxy_always_allow_rules;");
-  db().exec("DELETE FROM linked_accounts;");
-  db().exec("DELETE FROM api_keys;");
-  db().exec("DELETE FROM users;");
+  const database = await db();
+  await database.exec("DELETE FROM approvals;");
+  await database.exec("DELETE FROM proxy_requests;");
+  await database.exec("DELETE FROM proxy_always_allow_rules;");
+  await database.exec("DELETE FROM linked_accounts;");
+  await database.exec("DELETE FROM api_keys;");
+  await database.exec("DELETE FROM users;");
 }
 
 async function insertUser(telegramUserId = 123): Promise<string> {
   const id = ulid();
-  db()
+  const database = await db();
+  await database
     .query(
       "INSERT INTO users (id, telegram_user_id, created_at, status) VALUES (?, ?, ?, ?);"
     )
@@ -44,7 +46,8 @@ async function insertApiKey(params: {
   const apiKeyId = ulid();
   const keyHash = await sha256Hex(params.keyPlain);
   const now = nowIso();
-  db()
+  const database = await db();
+  await database
     .query(
       "INSERT INTO api_keys (id, user_id, label, key_hash, created_at, updated_at, revoked_at, last_used_at) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL);"
     )
@@ -69,7 +72,7 @@ test("always allow: /request auto-approves matching endpoints", async () => {
   });
 
   // Create permanent allow rule for GET api.github.com/user, scoped to key/IP.
-  upsertAlwaysAllowRule({
+  await upsertAlwaysAllowRule({
     userId,
     apiKeyId: keyA.apiKeyId,
     requesterIp: "203.0.113.10",
@@ -95,8 +98,9 @@ test("always allow: /request auto-approves matching endpoints", async () => {
   const j = (await res.json()) as JsonRecord;
   expect(j.status).toBe("APPROVED");
 
-  const row = db()
+  const database = await db();
+  const row = (await database
     .query("SELECT status FROM proxy_requests WHERE id = ? LIMIT 1;")
-    .get(j.request_id as string) as { status: string };
+    .get(j.request_id as string)) as { status: string };
   expect(row.status).toBe("APPROVED");
 });

@@ -53,8 +53,9 @@ export async function createGitSession(params: {
   const allowDefault = 0;
   const denyDeletes = 1;
   const denyTags = 1;
+  const database = await db();
 
-  db()
+  await database
     .query(
       "INSERT INTO git_sessions (id, user_id, api_key_id, provider, operation, repo_owner, repo_name, status, created_at, updated_at, approval_expires_at, last_activity_at, session_secret_hash, session_secret_ciphertext, allow_default_branch_push, deny_deletes, deny_tag_updates, default_branch_ref, error_code, error_message) " +
         "VALUES (?, ?, ?, 'github', ?, ?, ?, 'PENDING_APPROVAL', ?, ?, ?, NULL, ?, ?, ?, ?, ?, NULL, NULL, NULL);"
@@ -79,12 +80,13 @@ export async function createGitSession(params: {
   return { sessionId, sessionSecret, approvalExpiresAt };
 }
 
-export function getGitSessionKeyScoped(params: {
+export async function getGitSessionKeyScoped(params: {
   sessionId: string;
   userId: string;
   apiKeyId: string;
-}): GitSessionRow | null {
-  return db()
+}): Promise<GitSessionRow | null> {
+  const database = await db();
+  return (await database
     .query(
       "SELECT id, user_id, api_key_id, provider, operation, repo_owner, repo_name, status, approval_expires_at, session_secret_hash, allow_default_branch_push, deny_deletes, deny_tag_updates, default_branch_ref FROM git_sessions WHERE id = ? AND user_id = ? AND api_key_id = ?;"
     )
@@ -92,19 +94,20 @@ export function getGitSessionKeyScoped(params: {
       params.sessionId,
       params.userId,
       params.apiKeyId
-    ) as GitSessionRow | null;
+    )) as GitSessionRow | null;
 }
 
-export function getGitSessionSecretCiphertextKeyScoped(params: {
+export async function getGitSessionSecretCiphertextKeyScoped(params: {
   sessionId: string;
   userId: string;
   apiKeyId: string;
-}): Uint8Array | null {
-  const row = db()
+}): Promise<Uint8Array | null> {
+  const database = await db();
+  const row = (await database
     .query(
       "SELECT session_secret_ciphertext FROM git_sessions WHERE id = ? AND user_id = ? AND api_key_id = ?;"
     )
-    .get(params.sessionId, params.userId, params.apiKeyId) as {
+    .get(params.sessionId, params.userId, params.apiKeyId)) as {
     session_secret_ciphertext: Uint8Array;
   } | null;
 
@@ -115,11 +118,12 @@ export async function validateGitSessionSecret(params: {
   sessionId: string;
   secret: string;
 }): Promise<GitSessionRow | null> {
-  const row = db()
+  const database = await db();
+  const row = (await database
     .query(
       "SELECT id, user_id, api_key_id, provider, operation, repo_owner, repo_name, status, approval_expires_at, session_secret_hash, allow_default_branch_push, deny_deletes, deny_tag_updates, default_branch_ref FROM git_sessions WHERE id = ?;"
     )
-    .get(params.sessionId) as GitSessionRow | null;
+    .get(params.sessionId)) as GitSessionRow | null;
 
   if (!row) return null;
   const h = await sha256Hex(params.secret);
@@ -127,15 +131,16 @@ export async function validateGitSessionSecret(params: {
   return row;
 }
 
-export function setGitSessionStatus(params: {
+export async function setGitSessionStatus(params: {
   sessionId: string;
   userId: string;
   status: string;
   allowDefaultBranchPush?: boolean;
-}): void {
+}): Promise<void> {
   const now = nowIso();
+  const database = await db();
   if (typeof params.allowDefaultBranchPush === "boolean") {
-    db()
+    await database
       .query(
         "UPDATE git_sessions SET status = ?, allow_default_branch_push = ?, updated_at = ? WHERE id = ? AND user_id = ?;"
       )
@@ -147,7 +152,7 @@ export function setGitSessionStatus(params: {
         params.userId
       );
   } else {
-    db()
+    await database
       .query(
         "UPDATE git_sessions SET status = ?, updated_at = ? WHERE id = ? AND user_id = ?;"
       )
@@ -155,28 +160,33 @@ export function setGitSessionStatus(params: {
   }
 }
 
-export function touchGitSessionActivity(sessionId: string): void {
+export async function touchGitSessionActivity(
+  sessionId: string
+): Promise<void> {
   const now = nowIso();
-  db()
+  const database = await db();
+  await database
     .query(
       "UPDATE git_sessions SET last_activity_at = ?, updated_at = ? WHERE id = ?;"
     )
     .run(now, now, sessionId);
 }
 
-export function markGitSessionUsed(sessionId: string): void {
-  db()
+export async function markGitSessionUsed(sessionId: string): Promise<void> {
+  const database = await db();
+  await database
     .query(
       "UPDATE git_sessions SET status = 'USED', updated_at = ? WHERE id = ?;"
     )
     .run(nowIso(), sessionId);
 }
 
-export function storeDefaultBranchRef(params: {
+export async function storeDefaultBranchRef(params: {
   sessionId: string;
   ref: string;
-}): void {
-  db()
+}): Promise<void> {
+  const database = await db();
+  await database
     .query(
       "UPDATE git_sessions SET default_branch_ref = ?, updated_at = ? WHERE id = ? AND default_branch_ref IS NULL;"
     )

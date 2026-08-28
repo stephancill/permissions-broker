@@ -6,16 +6,17 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
-export function createConnectState(params: {
+export async function createConnectState(params: {
   userId: string;
   provider: string;
   ttlMs: number;
-}): { state: string; expiresAt: string } {
+}): Promise<{ state: string; expiresAt: string }> {
   const state = `cs_${ulid()}`;
   const now = nowIso();
   const expiresAt = new Date(Date.now() + params.ttlMs).toISOString();
 
-  db()
+  const database = await db();
+  await database
     .query(
       "INSERT INTO connect_states (state, user_id, provider, created_at, expires_at, used_at) VALUES (?, ?, ?, ?, ?, NULL);"
     )
@@ -24,14 +25,18 @@ export function createConnectState(params: {
   return { state, expiresAt };
 }
 
-export function getConnectState(params: { state: string; provider: string }): {
+export async function getConnectState(params: {
+  state: string;
+  provider: string;
+}): Promise<{
   userId: string;
-} {
-  const row = db()
+}> {
+  const database = await db();
+  const row = (await database
     .query(
       "SELECT user_id, expires_at, used_at FROM connect_states WHERE state = ? AND provider = ? LIMIT 1;"
     )
-    .get(params.state, params.provider) as {
+    .get(params.state, params.provider)) as {
     user_id: string;
     expires_at: string;
     used_at: string | null;
@@ -47,8 +52,9 @@ export function getConnectState(params: { state: string; provider: string }): {
   return { userId: row.user_id };
 }
 
-export function markConnectStateUsed(state: string): void {
-  db()
+export async function markConnectStateUsed(state: string): Promise<void> {
+  const database = await db();
+  await database
     .query(
       "UPDATE connect_states SET used_at = ? WHERE state = ? AND used_at IS NULL;"
     )

@@ -50,11 +50,12 @@ export async function createProxyRequest(params: {
   const requestHash = await sha256Hex(canonicalPayload);
 
   if (params.idempotencyKey) {
-    const existing = db()
+    const database = await db();
+    const existing = (await database
       .query(
         "SELECT id, upstream_url, request_hash, status, approval_expires_at FROM proxy_requests WHERE api_key_id = ? AND idempotency_key = ? LIMIT 1;"
       )
-      .get(params.apiKeyId, params.idempotencyKey) as {
+      .get(params.apiKeyId, params.idempotencyKey)) as {
       id: string;
       upstream_url: string;
       request_hash: string;
@@ -80,7 +81,8 @@ export async function createProxyRequest(params: {
     Date.now() + params.approvalTtlMs
   ).toISOString();
 
-  db()
+  const database = await db();
+  await database
     .query(
       "INSERT INTO proxy_requests (id, user_id, api_key_id, api_key_label_snapshot, requester_ip, upstream_url, method, request_headers_json, request_body_base64, request_hash, consent_hint, status, created_at, updated_at, approval_expires_at, idempotency_key, upstream_http_status, upstream_content_type, upstream_bytes, result_state, error_code, error_message) " +
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, 'NONE', NULL, NULL);"
@@ -114,10 +116,10 @@ export async function createProxyRequest(params: {
   };
 }
 
-export function getProxyRequestForUser(params: {
+export async function getProxyRequestForUser(params: {
   requestId: string;
   userId: string;
-}): {
+}): Promise<{
   id: string;
   user_id: string;
   api_key_label_snapshot: string;
@@ -126,12 +128,13 @@ export function getProxyRequestForUser(params: {
   consent_hint: string | null;
   status: string;
   approval_expires_at: string;
-} | null {
-  return db()
+} | null> {
+  const database = await db();
+  return (await database
     .query(
       "SELECT id, user_id, api_key_label_snapshot, upstream_url, request_hash, consent_hint, status, approval_expires_at FROM proxy_requests WHERE id = ? AND user_id = ?;"
     )
-    .get(params.requestId, params.userId) as {
+    .get(params.requestId, params.userId)) as {
     id: string;
     user_id: string;
     api_key_label_snapshot: string;
@@ -143,19 +146,20 @@ export function getProxyRequestForUser(params: {
   } | null;
 }
 
-export function decideProxyRequest(params: {
+export async function decideProxyRequest(params: {
   requestId: string;
   userId: string;
   decision: "approved" | "denied";
   telegramUserId: number;
   telegramChatId: number;
   telegramMessageId: number;
-}): { ok: true } | { ok: false; reason: string } {
-  const row = db()
+}): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const database = await db();
+  const row = (await database
     .query(
       "SELECT status, approval_expires_at FROM proxy_requests WHERE id = ? AND user_id = ?;"
     )
-    .get(params.requestId, params.userId) as {
+    .get(params.requestId, params.userId)) as {
     status: string;
     approval_expires_at: string;
   } | null;
@@ -166,7 +170,7 @@ export function decideProxyRequest(params: {
 
   const exp = Date.parse(row.approval_expires_at);
   if (Number.isFinite(exp) && Date.now() > exp) {
-    db()
+    await database
       .query(
         "UPDATE proxy_requests SET status = 'EXPIRED', updated_at = ?, error_code = 'APPROVAL_EXPIRED' WHERE id = ? AND user_id = ? AND status = 'PENDING_APPROVAL';"
       )
@@ -179,14 +183,14 @@ export function decideProxyRequest(params: {
   const errorCode = params.decision === "denied" ? "DENIED" : null;
 
   try {
-    db().transaction(() => {
-      db()
+    await database.transaction(async () => {
+      await database
         .query(
           "UPDATE proxy_requests SET status = ?, updated_at = ?, error_code = ?, error_message = NULL WHERE id = ? AND user_id = ? AND status = 'PENDING_APPROVAL';"
         )
         .run(newStatus, now, errorCode, params.requestId, params.userId);
 
-      db()
+      await database
         .query(
           "INSERT INTO approvals (request_id, telegram_chat_id, telegram_message_id, decision, decided_at, decided_by_telegram_user_id) VALUES (?, ?, ?, ?, ?, ?);"
         )
@@ -198,7 +202,7 @@ export function decideProxyRequest(params: {
           now,
           params.telegramUserId
         );
-    })();
+    });
   } catch {
     return { ok: false, reason: "already_decided" };
   }

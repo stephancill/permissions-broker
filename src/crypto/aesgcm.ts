@@ -37,14 +37,22 @@ export async function encryptUtf8(plaintext: string): Promise<Uint8Array> {
   return out;
 }
 
-export async function decryptUtf8(ciphertext: Uint8Array): Promise<string> {
+function normalizeBytes(bytes: Uint8Array | ArrayBuffer): Uint8Array {
+  if (bytes instanceof Uint8Array) return new Uint8Array(bytes);
+  return new Uint8Array(bytes);
+}
+
+export async function decryptUtf8(
+  ciphertext: Uint8Array | ArrayBuffer
+): Promise<string> {
   const key = await getKey();
-  if (ciphertext.byteLength < IV_BYTES + 1) {
+  const bytes = normalizeBytes(ciphertext);
+  if (bytes.byteLength < IV_BYTES + 1) {
     throw new Error("ciphertext too short");
   }
 
-  const iv = ciphertext.slice(0, IV_BYTES);
-  const ct = ciphertext.slice(IV_BYTES);
+  const iv = bytes.slice(0, IV_BYTES);
+  const ct = bytes.slice(IV_BYTES);
   const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct);
   return new TextDecoder().decode(pt);
 }

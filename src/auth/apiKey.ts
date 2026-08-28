@@ -32,11 +32,12 @@ export const requireApiKey: MiddlewareHandler = async (c, next) => {
   if (!token) return c.json({ error: "missing_api_key" }, 401);
 
   const keyHash = await sha256Hex(token);
-  const row = db()
+  const database = await db();
+  const row = (await database
     .query(
       "SELECT id, user_id, label, revoked_at FROM api_keys WHERE key_hash = ? LIMIT 1;"
     )
-    .get(keyHash) as {
+    .get(keyHash)) as {
     id: string;
     user_id: string;
     label: string;
@@ -46,7 +47,7 @@ export const requireApiKey: MiddlewareHandler = async (c, next) => {
   if (!row) return c.json({ error: "invalid_api_key" }, 401);
   if (row.revoked_at) return c.json({ error: "api_key_revoked" }, 403);
 
-  db()
+  await database
     .query("UPDATE api_keys SET last_used_at = ? WHERE id = ?;")
     .run(nowIso(), row.id);
 

@@ -24,21 +24,22 @@ function nowIso(): string {
 
 type UserRow = { id: string };
 
-function ensureUser(telegramUserId: number): string {
-  const existing = db()
+async function ensureUser(telegramUserId: number): Promise<string> {
+  const database = await db();
+  const existing = (await database
     .query("SELECT id FROM users WHERE telegram_user_id = ?;")
-    .get(telegramUserId) as UserRow | null;
+    .get(telegramUserId)) as UserRow | null;
 
   if (existing) return existing.id;
 
   const id = ulid();
-  db()
+  await database
     .query(
       "INSERT INTO users (id, telegram_user_id, created_at, status) VALUES (?, ?, ?, ?);"
     )
     .run(id, telegramUserId, nowIso(), "active");
 
-  auditEvent({
+  await auditEvent({
     userId: id,
     actorType: "telegram",
     actorId: String(telegramUserId),
@@ -49,16 +50,17 @@ function ensureUser(telegramUserId: number): string {
   return id;
 }
 
-function setPendingInput(params: {
+async function setPendingInput(params: {
   userId: string;
   action: string;
   targetId?: string;
   ttlMs: number;
-}): void {
+}): Promise<void> {
   const createdAt = nowIso();
   const expiresAt = new Date(Date.now() + params.ttlMs).toISOString();
 
-  db()
+  const database = await db();
+  await database
     .query(
       "INSERT INTO telegram_pending_inputs (user_id, action, target_id, created_at, expires_at) VALUES (?, ?, ?, ?, ?) " +
         "ON CONFLICT(user_id) DO UPDATE SET action=excluded.action, target_id=excluded.target_id, created_at=excluded.created_at, expires_at=excluded.expires_at;"
@@ -72,20 +74,24 @@ function setPendingInput(params: {
     );
 }
 
-function clearPendingInput(userId: string): void {
-  db()
+async function clearPendingInput(userId: string): Promise<void> {
+  const database = await db();
+  await database
     .query("DELETE FROM telegram_pending_inputs WHERE user_id = ?;")
     .run(userId);
 }
 
-function getPendingInput(
-  userId: string
-): { action: string; target_id: string | null; expires_at: string } | null {
-  return db()
+async function getPendingInput(userId: string): Promise<{
+  action: string;
+  target_id: string | null;
+  expires_at: string;
+} | null> {
+  const database = await db();
+  return (await database
     .query(
       "SELECT action, target_id, expires_at FROM telegram_pending_inputs WHERE user_id = ?;"
     )
-    .get(userId) as {
+    .get(userId)) as {
     action: string;
     target_id: string | null;
     expires_at: string;
@@ -102,7 +108,7 @@ async function createApiKey(params: {
     label: params.label,
   });
 
-  auditEvent({
+  await auditEvent({
     userId: params.userId,
     actorType: "telegram",
     actorId: String(params.telegramUserId),
@@ -125,7 +131,8 @@ async function createApiKeyRow(params: {
   const id = ulid();
   const now = nowIso();
 
-  db()
+  const database = await db();
+  await database
     .query(
       "INSERT INTO api_keys (id, user_id, label, key_hash, created_at, updated_at, revoked_at, last_used_at) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL);"
     )
@@ -144,15 +151,16 @@ function normalizeLabel(label: string): string {
   return label.trim().replace(/\s+/g, " ");
 }
 
-function renderKeysMessage(userId: string): {
+async function renderKeysMessage(userId: string): Promise<{
   text: string;
   keyboard: InlineKeyboard;
-} {
-  const rows = db()
+}> {
+  const database = await db();
+  const rows = (await database
     .query(
       "SELECT id, label, created_at, revoked_at, last_used_at FROM api_keys WHERE user_id = ? ORDER BY created_at DESC;"
     )
-    .all(userId) as {
+    .all(userId)) as {
     id: string;
     label: string;
     created_at: string;
@@ -251,7 +259,7 @@ export function createBot(): Bot {
 
   bot.command("start", async (ctx) => {
     if (!ctx.from) return;
-    ensureUser(ctx.from.id);
+    await ensureUser(ctx.from.id);
     await ctx.reply(
       "Permissions Broker is running. Use /connect to link a provider and /key to create an API key."
     );
@@ -266,21 +274,24 @@ export function createBot(): Bot {
     return new Date().toISOString();
   }
 
-  function getLinkedAccountsByProvider(userId: string): Map<
-    string,
-    {
-      provider: string;
-      status: string;
-      scopes: string;
-      created_at: string;
-      revoked_at: string | null;
-    }
+  async function getLinkedAccountsByProvider(userId: string): Promise<
+    Map<
+      string,
+      {
+        provider: string;
+        status: string;
+        scopes: string;
+        created_at: string;
+        revoked_at: string | null;
+      }
+    >
   > {
-    const rows = db()
+    const database = await db();
+    const rows = (await database
       .query(
         "SELECT provider, status, scopes, created_at, revoked_at FROM linked_accounts WHERE user_id = ? ORDER BY created_at DESC;"
       )
-      .all(userId) as {
+      .all(userId)) as {
       provider: string;
       status: string;
       scopes: string;
@@ -295,11 +306,11 @@ export function createBot(): Bot {
     return byProvider;
   }
 
-  function renderConnectionsList(userId: string): {
+  async function renderConnectionsList(userId: string): Promise<{
     text: string;
     keyboard: InlineKeyboard;
-  } {
-    const byProvider = getLinkedAccountsByProvider(userId);
+  }> {
+    const byProvider = await getLinkedAccountsByProvider(userId);
 
     const lines: string[] = [];
     for (const p of supportedProviders) {
@@ -329,14 +340,14 @@ export function createBot(): Bot {
     };
   }
 
-  function renderProviderDetails(
+  async function renderProviderDetails(
     userId: string,
     providerId: SupportedProvider
-  ): {
+  ): Promise<{
     text: string;
     keyboard: InlineKeyboard;
-  } {
-    const byProvider = getLinkedAccountsByProvider(userId);
+  }> {
+    const byProvider = await getLinkedAccountsByProvider(userId);
     const r = byProvider.get(providerId);
 
     const kb = new InlineKeyboard();
@@ -383,7 +394,7 @@ export function createBot(): Bot {
     }
 
     if (params.providerId === "cloudflare") {
-      const { state } = createConnectState({
+      const { state } = await createConnectState({
         userId: params.userId,
         provider: params.providerId,
         ttlMs: 10 * 60_000,
@@ -402,7 +413,7 @@ export function createBot(): Bot {
 
     const redirectUri = `${env.APP_BASE_URL}/v1/accounts/callback/${params.providerId}`;
     const codeVerifier = oauth.generateRandomCodeVerifier();
-    const { state } = createOauthState({
+    const { state } = await createOauthState({
       userId: params.userId,
       provider: provider.id,
       ttlMs: 10 * 60_000,
@@ -436,12 +447,12 @@ export function createBot(): Bot {
 
   bot.command("connect", async (ctx) => {
     if (!ctx.from) return;
-    const userId = ensureUser(ctx.from.id);
+    const userId = await ensureUser(ctx.from.id);
 
     const raw = (ctx.match ?? "").toString().trim();
 
     if (!raw) {
-      const rendered = renderConnectionsList(userId);
+      const rendered = await renderConnectionsList(userId);
       await ctx.reply(rendered.text, { reply_markup: rendered.keyboard });
       return;
     }
@@ -451,8 +462,8 @@ export function createBot(): Bot {
 
   bot.callbackQuery(/c:connections:list/, async (ctx) => {
     if (!ctx.from) return;
-    const userId = ensureUser(ctx.from.id);
-    const rendered = renderConnectionsList(userId);
+    const userId = await ensureUser(ctx.from.id);
+    const rendered = await renderConnectionsList(userId);
 
     await ctx.answerCallbackQuery();
     await ctx.editMessageText(rendered.text, {
@@ -473,7 +484,7 @@ export function createBot(): Bot {
 
   bot.callbackQuery(/^c:connections:provider:/, async (ctx) => {
     if (!ctx.from) return;
-    const userId = ensureUser(ctx.from.id);
+    const userId = await ensureUser(ctx.from.id);
     const providerId = parseProviderIdFromCallbackData(
       "c:connections:provider:",
       ctx.callbackQuery.data
@@ -484,7 +495,7 @@ export function createBot(): Bot {
       return;
     }
 
-    const rendered = renderProviderDetails(userId, providerId);
+    const rendered = await renderProviderDetails(userId, providerId);
 
     await ctx.answerCallbackQuery();
     await ctx.editMessageText(rendered.text, {
@@ -494,7 +505,7 @@ export function createBot(): Bot {
 
   bot.callbackQuery(/^c:connections:disconnect:/, async (ctx) => {
     if (!ctx.from) return;
-    const userId = ensureUser(ctx.from.id);
+    const userId = await ensureUser(ctx.from.id);
     const providerId = parseProviderIdFromCallbackData(
       "c:connections:disconnect:",
       ctx.callbackQuery.data
@@ -505,13 +516,14 @@ export function createBot(): Bot {
       return;
     }
 
-    db()
+    const database = await db();
+    await database
       .query(
         "UPDATE linked_accounts SET status = 'revoked', revoked_at = ? WHERE user_id = ? AND provider = ? AND status = 'active';"
       )
       .run(nowIso(), userId, providerId);
 
-    const rendered = renderProviderDetails(userId, providerId);
+    const rendered = await renderProviderDetails(userId, providerId);
     await ctx.answerCallbackQuery({ text: "disconnected" });
     await ctx.editMessageText(rendered.text, {
       reply_markup: rendered.keyboard,
@@ -520,7 +532,7 @@ export function createBot(): Bot {
 
   bot.callbackQuery(/^c:connections:reconnect:/, async (ctx) => {
     if (!ctx.from) return;
-    const userId = ensureUser(ctx.from.id);
+    const userId = await ensureUser(ctx.from.id);
     const providerId = parseProviderIdFromCallbackData(
       "c:connections:reconnect:",
       ctx.callbackQuery.data
@@ -552,7 +564,7 @@ export function createBot(): Bot {
 
   bot.callbackQuery(/^c:connect:/, async (ctx) => {
     if (!ctx.from) return;
-    const userId = ensureUser(ctx.from.id);
+    const userId = await ensureUser(ctx.from.id);
     const providerId = parseProviderIdFromCallbackData(
       "c:connect:",
       ctx.callbackQuery.data
@@ -569,13 +581,17 @@ export function createBot(): Bot {
 
   bot.command("key", async (ctx) => {
     if (!ctx.from) return;
-    const userId = ensureUser(ctx.from.id);
+    const userId = await ensureUser(ctx.from.id);
 
     const raw = (ctx.match ?? "").toString();
     const label = normalizeLabel(raw);
 
     if (!label) {
-      setPendingInput({ userId, action: "CREATE_KEY", ttlMs: 5 * 60_000 });
+      await setPendingInput({
+        userId,
+        action: "CREATE_KEY",
+        ttlMs: 5 * 60_000,
+      });
       await ctx.reply("Send the label for this API key (unique per user).", {
         reply_markup: { force_reply: true },
       });
@@ -602,9 +618,9 @@ export function createBot(): Bot {
 
   bot.command("keys", async (ctx) => {
     if (!ctx.from) return;
-    const userId = ensureUser(ctx.from.id);
+    const userId = await ensureUser(ctx.from.id);
 
-    const rendered = renderKeysMessage(userId);
+    const rendered = await renderKeysMessage(userId);
     await ctx.reply(rendered.text, { reply_markup: rendered.keyboard });
   });
 
@@ -612,13 +628,14 @@ export function createBot(): Bot {
     if (!ctx.from) return;
     const action = ctx.match?.[1];
     const apiKeyId = ctx.match?.[2];
-    const userId = ensureUser(ctx.from.id);
+    const userId = await ensureUser(ctx.from.id);
+    const database = await db();
 
-    const row = db()
+    const row = (await database
       .query(
         "SELECT id, label, revoked_at FROM api_keys WHERE id = ? AND user_id = ?;"
       )
-      .get(apiKeyId, userId) as {
+      .get(apiKeyId, userId)) as {
       id: string;
       label: string;
       revoked_at: string | null;
@@ -634,13 +651,13 @@ export function createBot(): Bot {
         await ctx.answerCallbackQuery({ text: "Already revoked" });
         return;
       }
-      db()
+      await database
         .query(
           "UPDATE api_keys SET revoked_at = ?, updated_at = ? WHERE id = ? AND user_id = ?;"
         )
         .run(nowIso(), nowIso(), row.id, userId);
 
-      auditEvent({
+      await auditEvent({
         userId,
         actorType: "telegram",
         actorId: String(ctx.from.id),
@@ -652,7 +669,7 @@ export function createBot(): Bot {
 
       // Update the keys message so button state reflects the revoke.
       try {
-        const rendered = renderKeysMessage(userId);
+        const rendered = await renderKeysMessage(userId);
         await ctx.editMessageText(rendered.text, {
           reply_markup: rendered.keyboard,
         });
@@ -663,7 +680,7 @@ export function createBot(): Bot {
     }
 
     if (action === "rename") {
-      setPendingInput({
+      await setPendingInput({
         userId,
         action: "RENAME_KEY",
         targetId: row.id,
@@ -702,17 +719,17 @@ export function createBot(): Bot {
         // This keeps the user-facing "label" stable for the new key while preserving history.
         const freedLabel = rotatedLabel(oldLabel, row.id);
 
-        db().transaction(() => {
-          db()
+        await database.transaction(async () => {
+          await database
             .query(
               "UPDATE api_keys SET revoked_at = ?, updated_at = ?, label = ? WHERE id = ? AND user_id = ? AND revoked_at IS NULL;"
             )
             .run(now, now, freedLabel, row.id, userId);
-        })();
+        });
 
         const created = await createApiKeyRow({ userId, label: oldLabel });
 
-        auditEvent({
+        await auditEvent({
           userId,
           actorType: "telegram",
           actorId: String(ctx.from.id),
@@ -736,7 +753,7 @@ export function createBot(): Bot {
 
         // Update the keys message so button state reflects the rotation.
         try {
-          const rendered = renderKeysMessage(userId);
+          const rendered = await renderKeysMessage(userId);
           await ctx.editMessageText(rendered.text, {
             reply_markup: rendered.keyboard,
           });
@@ -754,7 +771,8 @@ export function createBot(): Bot {
     if (!ctx.from) return;
     const action = ctx.match?.[1];
     const requestId = ctx.match?.[2];
-    const userId = ensureUser(ctx.from.id);
+    const userId = await ensureUser(ctx.from.id);
+    const database = await db();
 
     const msg = ctx.callbackQuery.message;
     if (!msg || !("message_id" in msg)) {
@@ -765,11 +783,11 @@ export function createBot(): Bot {
     let alwaysAllowEnabled = false;
 
     if (action === "always_allow") {
-      const row = db()
+      const row = (await database
         .query(
           "SELECT upstream_url, method, api_key_id, requester_ip FROM proxy_requests WHERE id = ? AND user_id = ? LIMIT 1;"
         )
-        .get(requestId, userId) as {
+        .get(requestId, userId)) as {
         upstream_url: string;
         method: string;
         api_key_id: string;
@@ -788,7 +806,7 @@ export function createBot(): Bot {
         return;
       }
 
-      const { ruleId } = upsertAlwaysAllowRule({
+      const { ruleId } = await upsertAlwaysAllowRule({
         userId,
         apiKeyId: row.api_key_id,
         requesterIp: row.requester_ip,
@@ -796,7 +814,7 @@ export function createBot(): Bot {
         url: new URL(row.upstream_url),
       });
 
-      auditEvent({
+      await auditEvent({
         userId,
         requestId,
         actorType: "telegram",
@@ -816,7 +834,7 @@ export function createBot(): Bot {
 
     const decision = action === "deny" ? "denied" : "approved";
     const telegramChatId = "chat" in msg ? msg.chat.id : ctx.from.id;
-    const res = decideProxyRequest({
+    const res = await decideProxyRequest({
       requestId,
       userId,
       decision,
@@ -846,7 +864,7 @@ export function createBot(): Bot {
       return;
     }
 
-    auditEvent({
+    await auditEvent({
       userId,
       requestId,
       actorType: "telegram",
@@ -886,13 +904,14 @@ export function createBot(): Bot {
       if (!ctx.from) return;
       const action = ctx.match?.[1];
       const sessionId = ctx.match?.[2];
-      const userId = ensureUser(ctx.from.id);
+      const userId = await ensureUser(ctx.from.id);
+      const database = await db();
 
-      const sess = db()
+      const sess = (await database
         .query(
           "SELECT operation FROM git_sessions WHERE id = ? AND user_id = ? LIMIT 1;"
         )
-        .get(sessionId, userId) as { operation: string } | null;
+        .get(sessionId, userId)) as { operation: string } | null;
       const operation = sess?.operation ?? "clone";
 
       const msg = ctx.callbackQuery.message;
@@ -903,8 +922,8 @@ export function createBot(): Bot {
 
       try {
         if (action === "deny") {
-          setGitSessionStatus({ sessionId, userId, status: "DENIED" });
-          auditEvent({
+          await setGitSessionStatus({ sessionId, userId, status: "DENIED" });
+          await auditEvent({
             userId,
             actorType: "telegram",
             actorId: String(ctx.from.id),
@@ -913,8 +932,8 @@ export function createBot(): Bot {
           });
           await answerCallbackQuerySafe(ctx, { text: "denied" });
         } else if (action === "approve_clone") {
-          setGitSessionStatus({ sessionId, userId, status: "APPROVED" });
-          auditEvent({
+          await setGitSessionStatus({ sessionId, userId, status: "APPROVED" });
+          await auditEvent({
             userId,
             actorType: "telegram",
             actorId: String(ctx.from.id),
@@ -923,13 +942,13 @@ export function createBot(): Bot {
           });
           await answerCallbackQuerySafe(ctx, { text: "approved" });
         } else if (action === "approve_push_block") {
-          setGitSessionStatus({
+          await setGitSessionStatus({
             sessionId,
             userId,
             status: "APPROVED",
             allowDefaultBranchPush: false,
           });
-          auditEvent({
+          await auditEvent({
             userId,
             actorType: "telegram",
             actorId: String(ctx.from.id),
@@ -942,13 +961,13 @@ export function createBot(): Bot {
           });
           await answerCallbackQuerySafe(ctx, { text: "approved" });
         } else if (action === "approve_push_allow") {
-          setGitSessionStatus({
+          await setGitSessionStatus({
             sessionId,
             userId,
             status: "APPROVED",
             allowDefaultBranchPush: true,
           });
-          auditEvent({
+          await auditEvent({
             userId,
             actorType: "telegram",
             actorId: String(ctx.from.id),
@@ -985,13 +1004,13 @@ export function createBot(): Bot {
 
   bot.on("message:text", async (ctx) => {
     if (!ctx.from) return;
-    const userId = ensureUser(ctx.from.id);
-    const pending = getPendingInput(userId);
+    const userId = await ensureUser(ctx.from.id);
+    const pending = await getPendingInput(userId);
     if (!pending) return;
 
     const expiresAt = Date.parse(pending.expires_at);
     if (!Number.isFinite(expiresAt) || Date.now() > expiresAt) {
-      clearPendingInput(userId);
+      await clearPendingInput(userId);
       await ctx.reply("That action expired. Please try again.");
       return;
     }
@@ -1011,7 +1030,7 @@ export function createBot(): Bot {
           label,
           telegramUserId: ctx.from.id,
         });
-        clearPendingInput(userId);
+        await clearPendingInput(userId);
         await ctx.reply(
           renderOneTimeKeyMessage({ label, apiKey: created.keyPlain }),
           {
@@ -1022,13 +1041,14 @@ export function createBot(): Bot {
       }
 
       if (pending.action === "RENAME_KEY") {
-        db()
+        const database = await db();
+        await database
           .query(
             "UPDATE api_keys SET label = ?, updated_at = ? WHERE id = ? AND user_id = ? AND revoked_at IS NULL;"
           )
           .run(label, nowIso(), pending.target_id, userId);
-        clearPendingInput(userId);
-        auditEvent({
+        await clearPendingInput(userId);
+        await auditEvent({
           userId,
           actorType: "telegram",
           actorId: String(ctx.from.id),

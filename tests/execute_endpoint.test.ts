@@ -15,19 +15,21 @@ function nowIso(): string {
 
 async function setupDb() {
   // Ensure clean slate for this test file.
-  db().exec("DELETE FROM approvals;");
-  db().exec("DELETE FROM proxy_requests;");
-  db().exec("DELETE FROM linked_accounts;");
-  db().exec("DELETE FROM api_keys;");
-  db().exec("DELETE FROM users;");
+  const database = await db();
+  await database.exec("DELETE FROM approvals;");
+  await database.exec("DELETE FROM proxy_requests;");
+  await database.exec("DELETE FROM linked_accounts;");
+  await database.exec("DELETE FROM api_keys;");
+  await database.exec("DELETE FROM users;");
 }
 
 // Create schema once for this test file.
-migrate();
+await migrate();
 
 async function insertUser(telegramUserId = 123): Promise<string> {
   const id = ulid();
-  db()
+  const database = await db();
+  await database
     .query(
       "INSERT INTO users (id, telegram_user_id, created_at, status) VALUES (?, ?, ?, ?);"
     )
@@ -43,7 +45,8 @@ async function insertApiKey(params: {
   const apiKeyId = ulid();
   const keyHash = await sha256Hex(params.keyPlain);
   const now = nowIso();
-  db()
+  const database = await db();
+  await database
     .query(
       "INSERT INTO api_keys (id, user_id, label, key_hash, created_at, updated_at, revoked_at, last_used_at) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL);"
     )
@@ -60,7 +63,8 @@ async function insertApprovedRequest(params: {
   const id = ulid();
   const now = nowIso();
   const approvalExpiresAt = new Date(Date.now() + 120_000).toISOString();
-  db()
+  const database = await db();
+  await database
     .query(
       "INSERT INTO proxy_requests (id, user_id, api_key_id, api_key_label_snapshot, upstream_url, request_hash, consent_hint, status, created_at, updated_at, approval_expires_at, idempotency_key, upstream_http_status, upstream_content_type, upstream_bytes, result_state, error_code, error_message) " +
         "VALUES (?, ?, ?, ?, ?, ?, NULL, 'APPROVED', ?, ?, ?, NULL, NULL, NULL, NULL, 'NONE', NULL, NULL);"
@@ -163,9 +167,10 @@ test("execute endpoint architecture", async () => {
       upstreamUrl: `http://127.0.0.1:${upstream.port}/`,
     });
 
-    const pre = db()
+    const database = await db();
+    const pre = (await database
       .query("SELECT status, api_key_id FROM proxy_requests WHERE id = ?;")
-      .get(reqId) as { status: string; api_key_id: string };
+      .get(reqId)) as { status: string; api_key_id: string };
     expect(pre.status).toBe("APPROVED");
     expect(pre.api_key_id).toBe(keyA.apiKeyId);
 

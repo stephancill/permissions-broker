@@ -21,6 +21,8 @@ When self-hosting, update the skill definition to point to your own broker insta
 
 ## Self-hosting
 
+### Bun/Railway-style hosting
+
 1. Deploy to any host that can run Bun (VPS, Railway, Render, Fly.io, etc.)
 
 2. Create a Telegram bot via @BotFather (https://t.me/BotFather):
@@ -45,6 +47,21 @@ When self-hosting, update the skill definition to point to your own broker insta
    bun run start
 
 6. Open your bot in Telegram and run /start to link your account
+
+### Cloudflare Workers + D1
+
+The broker can also run on Cloudflare Workers with D1. This path uses Telegram webhooks and cron triggers instead of long polling and in-process sweepers.
+
+Note: `/v1/git/*` is mounted on the Worker, but large clone/push operations should be validated against Cloudflare Worker body/time limits before relying on it for heavy repositories.
+
+Migration runbook: `docs/RAILWAY_TO_CLOUDFLARE_WORKERS.md`
+
+Key points:
+
+- Preserve `APP_SECRET` exactly when importing existing data; encrypted linked-account credentials depend on it.
+- Import the Railway SQLite database into D1 before cutover.
+- Keep `APP_BASE_URL` on the same production domain when possible.
+- Register Telegram webhook at `$APP_BASE_URL/telegram/webhook` after Worker deploy.
 
 ## Local dev
 

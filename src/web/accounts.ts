@@ -166,11 +166,12 @@ async function listCloudflareAccounts(
 
 accountRouter.get("/", requireApiKey, async (c) => {
   const auth = c.get("apiKeyAuth");
-  const rows = db()
+  const database = await db();
+  const rows = (await database
     .query(
       "SELECT provider, provider_user_id, scopes, status, created_at, revoked_at FROM linked_accounts WHERE user_id = ? ORDER BY created_at DESC;"
     )
-    .all(auth.userId) as {
+    .all(auth.userId)) as {
     provider: string;
     provider_user_id: string;
     scopes: string;
@@ -199,11 +200,11 @@ accountRouter.get("/", requireApiKey, async (c) => {
         continue;
       }
 
-      const row = db()
+      const row = (await database
         .query(
           "SELECT refresh_token_ciphertext FROM linked_accounts WHERE user_id = ? AND provider = 'cloudflare' AND provider_user_id = ? AND status = 'active' LIMIT 1;"
         )
-        .get(auth.userId, r.provider_user_id) as {
+        .get(auth.userId, r.provider_user_id)) as {
         refresh_token_ciphertext: Uint8Array;
       } | null;
       if (!row) {
@@ -240,7 +241,7 @@ accountRouter.get("/callback/:provider", async (c) => {
   if (!env.APP_SECRET) return c.text("APP_SECRET not configured", 500);
   const redirectUri = `${env.APP_BASE_URL}/v1/accounts/callback/${providerId}`;
 
-  const { userId, pkceVerifier } = getOauthState({
+  const { userId, pkceVerifier } = await getOauthState({
     state,
     provider: providerId,
   });
@@ -260,7 +261,7 @@ accountRouter.get("/callback/:provider", async (c) => {
     return c.text(`oauth exchange failed: ${msg}`, 400);
   }
 
-  markOauthStateUsed(state);
+  await markOauthStateUsed(state);
 
   const refreshToken = tokenResult.refresh_token;
   const accessToken = tokenResult.access_token;
@@ -268,11 +269,12 @@ accountRouter.get("/callback/:provider", async (c) => {
 
   const scopes = scope ?? provider.scopes.join(" ");
 
-  const existing = db()
+  const database = await db();
+  const existing = (await database
     .query(
       "SELECT id, refresh_token_ciphertext FROM linked_accounts WHERE user_id = ? AND provider = ? AND status = 'active' LIMIT 1;"
     )
-    .get(userId, providerId) as {
+    .get(userId, providerId)) as {
     id: string;
     refresh_token_ciphertext: Uint8Array;
   } | null;
@@ -291,13 +293,13 @@ accountRouter.get("/callback/:provider", async (c) => {
   if (existing) {
     if (tokenToStore) {
       const ct = await encryptUtf8(tokenToStore);
-      db()
+      await database
         .query(
           "UPDATE linked_accounts SET scopes = ?, refresh_token_ciphertext = ?, status = 'active', revoked_at = NULL WHERE id = ?;"
         )
         .run(scopes, ct, existing.id);
     } else {
-      db()
+      await database
         .query(
           "UPDATE linked_accounts SET scopes = ?, status = 'active', revoked_at = NULL WHERE id = ?;"
         )
@@ -305,14 +307,14 @@ accountRouter.get("/callback/:provider", async (c) => {
     }
   } else {
     const ct = await encryptUtf8(tokenToStore as string);
-    db()
+    await database
       .query(
         "INSERT INTO linked_accounts (id, user_id, provider, provider_user_id, scopes, refresh_token_ciphertext, status, created_at, revoked_at) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, NULL);"
       )
       .run(ulid(), userId, providerId, providerUserId, scopes, ct, now);
   }
 
-  auditEvent({
+  await auditEvent({
     userId,
     actorType: "system",
     actorId: "oauth_callback",
@@ -320,14 +322,14 @@ accountRouter.get("/callback/:provider", async (c) => {
     event: { provider: providerId, scopes },
   });
 
-  const telegram = db()
+  const telegram = (await database
     .query("SELECT telegram_user_id FROM users WHERE id = ?;")
-    .get(userId) as { telegram_user_id: number } | null;
+    .get(userId)) as { telegram_user_id: number } | null;
 
   if (telegram?.telegram_user_id && env.TELEGRAM_BOT_TOKEN) {
     const { createBot } = await import("../telegram/bot");
     const bot = createBot();
-    bot.api
+    await bot.api
       .sendMessage(
         telegram.telegram_user_id,
         `Connected ${providerId}. Scopes: ${scopes}`
@@ -344,7 +346,7 @@ accountRouter.get("/connect/cloudflare", async (c) => {
   if (!state) return c.text("missing state", 400);
 
   try {
-    getConnectState({ state, provider: "cloudflare" });
+    await getConnectState({ state, provider: "cloudflare" });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return c.html(
@@ -388,7 +390,7 @@ accountRouter.post("/connect/cloudflare", async (c) => {
 
   let userId: string;
   try {
-    ({ userId } = getConnectState({ state, provider: "cloudflare" }));
+    ({ userId } = await getConnectState({ state, provider: "cloudflare" }));
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return c.html(
@@ -420,29 +422,30 @@ accountRouter.post("/connect/cloudflare", async (c) => {
       ? `api_token accounts=${accounts.map((x) => x.id).join(",")}`
       : "api_token";
 
-    const existing = db()
+    const database = await db();
+    const existing = (await database
       .query(
         "SELECT id FROM linked_accounts WHERE user_id = ? AND provider = 'cloudflare' AND status = 'active' LIMIT 1;"
       )
-      .get(userId) as { id: string } | null;
+      .get(userId)) as { id: string } | null;
 
     if (existing) {
-      db()
+      await database
         .query(
           "UPDATE linked_accounts SET provider_user_id = ?, scopes = ?, refresh_token_ciphertext = ?, status = 'active', revoked_at = NULL WHERE id = ?;"
         )
         .run(providerUserId, scopes, ct, existing.id);
     } else {
-      db()
+      await database
         .query(
           "INSERT INTO linked_accounts (id, user_id, provider, provider_user_id, scopes, refresh_token_ciphertext, status, created_at, revoked_at) VALUES (?, ?, 'cloudflare', ?, ?, ?, 'active', ?, NULL);"
         )
         .run(ulid(), userId, providerUserId, scopes, ct, now);
     }
 
-    markConnectStateUsed(state);
+    await markConnectStateUsed(state);
 
-    auditEvent({
+    await auditEvent({
       userId,
       actorType: "system",
       actorId: "connect_cloudflare",
@@ -450,13 +453,13 @@ accountRouter.post("/connect/cloudflare", async (c) => {
       event: { provider: "cloudflare", scopes },
     });
 
-    const telegram = db()
+    const telegram = (await database
       .query("SELECT telegram_user_id FROM users WHERE id = ?;")
-      .get(userId) as { telegram_user_id: number } | null;
+      .get(userId)) as { telegram_user_id: number } | null;
     if (telegram?.telegram_user_id && env.TELEGRAM_BOT_TOKEN) {
       const { createBot } = await import("../telegram/bot");
       const bot = createBot();
-      bot.api
+      await bot.api
         .sendMessage(telegram.telegram_user_id, "Connected cloudflare.")
         .catch(() => {});
     }

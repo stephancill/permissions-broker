@@ -6,16 +6,17 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
-export function auditEvent(params: {
+export async function auditEvent(params: {
   userId?: string;
   requestId?: string;
   actorType: "api_key" | "telegram" | "system";
   actorId: string;
   eventType: string;
   event: unknown;
-}): void {
+}): Promise<void> {
   const eventJson = JSON.stringify(params.event ?? {});
-  db()
+  const database = await db();
+  await database
     .query(
       "INSERT INTO audit_events (id, created_at, user_id, request_id, actor_type, actor_id, event_type, event_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?);"
     )

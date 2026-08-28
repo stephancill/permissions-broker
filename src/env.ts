@@ -50,4 +50,15 @@ const EnvSchema = z.object({
 });
 
 export type Env = z.infer<typeof EnvSchema>;
-export const env: Env = EnvSchema.parse(process.env);
+
+function readProcessEnv(): Record<string, string | undefined> {
+  if (typeof process === "undefined") return {};
+  return process.env;
+}
+
+export let env: Env = EnvSchema.parse(readProcessEnv());
+
+export function configureEnv(raw: Record<string, unknown>): Env {
+  env = EnvSchema.parse(raw);
+  return env;
+}

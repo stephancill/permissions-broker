@@ -5,17 +5,18 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
-export function createOauthState(params: {
+export async function createOauthState(params: {
   userId: string;
   provider: string;
   ttlMs: number;
   pkceVerifier?: string;
-}): { state: string } {
+}): Promise<{ state: string }> {
   const state = randomBase64Url(32);
   const createdAt = nowIso();
   const expiresAt = new Date(Date.now() + params.ttlMs).toISOString();
 
-  db()
+  const database = await db();
+  await database
     .query(
       "INSERT INTO oauth_states (state, user_id, provider, created_at, expires_at, used_at, pkce_verifier) VALUES (?, ?, ?, ?, ?, NULL, ?);"
     )
@@ -31,15 +32,19 @@ export function createOauthState(params: {
   return { state };
 }
 
-export function getOauthState(params: { state: string; provider: string }): {
+export async function getOauthState(params: {
+  state: string;
+  provider: string;
+}): Promise<{
   userId: string;
   pkceVerifier: string | null;
-} {
-  const row = db()
+}> {
+  const database = await db();
+  const row = (await database
     .query(
       "SELECT user_id, pkce_verifier, expires_at, used_at FROM oauth_states WHERE state = ? AND provider = ?;"
     )
-    .get(params.state, params.provider) as {
+    .get(params.state, params.provider)) as {
     user_id: string;
     pkce_verifier: string | null;
     expires_at: string;
@@ -55,8 +60,9 @@ export function getOauthState(params: { state: string; provider: string }): {
   return { userId: row.user_id, pkceVerifier: row.pkce_verifier };
 }
 
-export function markOauthStateUsed(state: string): void {
-  db()
+export async function markOauthStateUsed(state: string): Promise<void> {
+  const database = await db();
+  await database
     .query("UPDATE oauth_states SET used_at = ? WHERE state = ?;")
     .run(nowIso(), state);
 }

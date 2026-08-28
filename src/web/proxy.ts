@@ -285,15 +285,16 @@ function formatQueryForTelegram(url: URL): string {
 
 export const proxyRouter = new Hono();
 
-proxyRouter.get("/requests/:id", requireApiKey, (c) => {
+proxyRouter.get("/requests/:id", requireApiKey, async (c) => {
   const auth = c.get("apiKeyAuth");
   const requestId = c.req.param("id");
 
-  const row = db()
+  const database = await db();
+  const row = (await database
     .query(
       "SELECT id, status, approval_expires_at, error_code, error_message, upstream_http_status, upstream_content_type, upstream_bytes FROM proxy_requests WHERE id = ? AND user_id = ? AND api_key_id = ?;"
     )
-    .get(requestId, auth.userId, auth.apiKeyId) as {
+    .get(requestId, auth.userId, auth.apiKeyId)) as {
     id: string;
     status: string;
     approval_expires_at: string;
@@ -359,11 +360,12 @@ proxyRouter.post("/requests/:id/execute", requireApiKey, async (c) => {
   const auth = c.get("apiKeyAuth");
   const requestId = c.req.param("id");
 
-  const row = db()
+  const database = await db();
+  const row = (await database
     .query(
       "SELECT id, user_id, api_key_id, status, approval_expires_at, upstream_url, method, request_headers_json, request_body_base64 FROM proxy_requests WHERE id = ? AND user_id = ? AND api_key_id = ?;"
     )
-    .get(requestId, auth.userId, auth.apiKeyId) as {
+    .get(requestId, auth.userId, auth.apiKeyId)) as {
     id: string;
     user_id: string;
     api_key_id: string;
@@ -406,7 +408,7 @@ proxyRouter.post("/requests/:id/execute", requireApiKey, async (c) => {
   // Handle edge case: approval expired but sweeper has not run.
   const exp = Date.parse(row.approval_expires_at);
   if (Number.isFinite(exp) && Date.now() > exp) {
-    db()
+    await database
       .query(
         "UPDATE proxy_requests SET status = 'EXPIRED', updated_at = ?, error_code = 'APPROVAL_EXPIRED' WHERE id = ? AND status = 'APPROVED';"
       )
@@ -414,7 +416,7 @@ proxyRouter.post("/requests/:id/execute", requireApiKey, async (c) => {
     return c.json({ error: "approval_expired", request_id: row.id }, 408);
   }
 
-  const claimRun = db()
+  const claimRun = await database
     .query(
       "UPDATE proxy_requests SET status = 'EXECUTING', updated_at = ? WHERE id = ? AND status = 'APPROVED' AND api_key_id = ?;"
     )
@@ -451,7 +453,7 @@ proxyRouter.post("/requests/:id/execute", requireApiKey, async (c) => {
       const errorCode =
         terminalStatus === "FAILED" ? `UPSTREAM_HTTP_${res.status}` : null;
 
-      db()
+      await database
         .query(
           "UPDATE proxy_requests SET status = ?, updated_at = ?, upstream_http_status = ?, upstream_content_type = ?, upstream_bytes = ?, error_code = ?, error_message = NULL WHERE id = ?;"
         )
@@ -478,16 +480,16 @@ proxyRouter.post("/requests/:id/execute", requireApiKey, async (c) => {
     const url = new URL(row.upstream_url);
     const provider = getProxyProviderForUrl(url);
 
-    const acct = db()
+    const acct = (await database
       .query(
         "SELECT refresh_token_ciphertext FROM linked_accounts WHERE user_id = ? AND provider = ? AND status = 'active' LIMIT 1;"
       )
-      .get(auth.userId, provider.id) as {
+      .get(auth.userId, provider.id)) as {
       refresh_token_ciphertext: Uint8Array;
     } | null;
 
     if (!acct) {
-      db()
+      await database
         .query(
           "UPDATE proxy_requests SET status = 'FAILED', updated_at = ?, error_code = 'NO_LINKED_ACCOUNT' WHERE id = ?;"
         )
@@ -503,7 +505,7 @@ proxyRouter.post("/requests/:id/execute", requireApiKey, async (c) => {
     }
 
     if (!env.APP_SECRET) {
-      db()
+      await database
         .query(
           "UPDATE proxy_requests SET status = 'FAILED', updated_at = ?, error_code = 'APP_SECRET_NOT_CONFIGURED' WHERE id = ?;"
         )
@@ -515,7 +517,7 @@ proxyRouter.post("/requests/:id/execute", requireApiKey, async (c) => {
 
     const method = (row.method || "GET").toUpperCase();
     if (!provider.allowedMethods.has(method)) {
-      db()
+      await database
         .query(
           "UPDATE proxy_requests SET status = 'FAILED', updated_at = ?, error_code = 'METHOD_NOT_ALLOWED' WHERE id = ?;"
         )
@@ -529,7 +531,7 @@ proxyRouter.post("/requests/:id/execute", requireApiKey, async (c) => {
       storedCredential,
     });
     if (!allow.allowed) {
-      db()
+      await database
         .query(
           "UPDATE proxy_requests SET status = 'FAILED', updated_at = ?, error_code = 'DISALLOWED_UPSTREAM_URL', error_message = ? WHERE id = ?;"
         )
@@ -557,7 +559,7 @@ proxyRouter.post("/requests/:id/execute", requireApiKey, async (c) => {
           .filter(Boolean)
           .join(" ");
 
-        db()
+        await database
           .query(
             "UPDATE proxy_requests SET status = 'FAILED', updated_at = ?, error_code = 'OAUTH_REFRESH_FAILED', error_message = ? WHERE id = ?;"
           )
@@ -575,7 +577,7 @@ proxyRouter.post("/requests/:id/execute", requireApiKey, async (c) => {
       }
 
       const em = err instanceof Error ? err.message : String(err);
-      db()
+      await database
         .query(
           "UPDATE proxy_requests SET status = 'FAILED', updated_at = ?, error_code = 'AUTH_FAILED', error_message = ? WHERE id = ?;"
         )
@@ -642,7 +644,7 @@ proxyRouter.post("/requests/:id/execute", requireApiKey, async (c) => {
     const errorCode =
       terminalStatus === "FAILED" ? `UPSTREAM_HTTP_${res.status}` : null;
 
-    db()
+    await database
       .query(
         "UPDATE proxy_requests SET status = ?, updated_at = ?, upstream_http_status = ?, upstream_content_type = ?, upstream_bytes = ?, error_code = ?, error_message = NULL WHERE id = ?;"
       )
@@ -656,7 +658,7 @@ proxyRouter.post("/requests/:id/execute", requireApiKey, async (c) => {
         row.id
       );
 
-    auditEvent({
+    await auditEvent({
       userId: auth.userId,
       requestId: row.id,
       actorType: "api_key",
@@ -678,7 +680,7 @@ proxyRouter.post("/requests/:id/execute", requireApiKey, async (c) => {
     const msg = err instanceof Error ? err.message : String(err);
     const errorCode =
       msg === "response_too_large" ? "RESPONSE_TOO_LARGE" : "UPSTREAM_FAILED";
-    db()
+    await database
       .query(
         "UPDATE proxy_requests SET status = 'FAILED', updated_at = ?, error_code = ?, error_message = ? WHERE id = ?;"
       )
@@ -732,6 +734,7 @@ proxyRouter.post("/request", requireApiKey, async (c) => {
     );
   }
 
+  const database = await db();
   const allow = await provider.isAllowedUpstreamUrl({
     userId: auth.userId,
     url: validatedUrl,
@@ -750,7 +753,7 @@ proxyRouter.post("/request", requireApiKey, async (c) => {
 
   const alwaysAllow =
     requesterIp != null
-      ? hasAlwaysAllowRule({
+      ? await hasAlwaysAllowRule({
           userId: auth.userId,
           apiKeyId: auth.apiKeyId,
           requesterIp,
@@ -807,7 +810,7 @@ proxyRouter.post("/request", requireApiKey, async (c) => {
   // If a permanent allow rule exists for this endpoint, skip the Telegram round-trip.
   // (We still create a proxy_request row for auditability and idempotency semantics.)
   if (alwaysAllow && created.status === "PENDING_APPROVAL") {
-    db()
+    await database
       .query(
         "UPDATE proxy_requests SET status = 'APPROVED', updated_at = ?, error_code = NULL, error_message = NULL WHERE id = ? AND user_id = ? AND status = 'PENDING_APPROVAL';"
       )
@@ -818,7 +821,7 @@ proxyRouter.post("/request", requireApiKey, async (c) => {
   }
 
   if (created.isNew) {
-    auditEvent({
+    await auditEvent({
       userId: auth.userId,
       requestId: created.requestId,
       actorType: "api_key",
@@ -831,9 +834,9 @@ proxyRouter.post("/request", requireApiKey, async (c) => {
     });
   }
 
-  const u = db()
+  const u = (await database
     .query("SELECT telegram_user_id FROM users WHERE id = ?;")
-    .get(auth.userId) as { telegram_user_id: number } | null;
+    .get(auth.userId)) as { telegram_user_id: number } | null;
 
   if (created.isNew && u?.telegram_user_id && env.TELEGRAM_BOT_TOKEN) {
     // Inform the user that the request was auto-approved via an always-allow rule.
@@ -849,7 +852,7 @@ proxyRouter.post("/request", requireApiKey, async (c) => {
         `<b>Request</b>: <code>${escapeHtml(`${methodNorm} ${url.hostname}${url.pathname}`)}</code>`,
       ].join("\n");
 
-      telegramApi()
+      await telegramApi()
         .sendMessage(u.telegram_user_id, text, { parse_mode: "HTML" })
         .catch(() => {});
     }
@@ -928,7 +931,7 @@ proxyRouter.post("/request", requireApiKey, async (c) => {
         ],
       };
 
-      telegramApi()
+      await telegramApi()
         .sendMessage(u.telegram_user_id, text, {
           reply_markup: kb,
           parse_mode: "HTML",

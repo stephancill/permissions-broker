@@ -31,13 +31,13 @@ export function getAlwaysAllowKey(params: {
   };
 }
 
-export function hasAlwaysAllowRule(params: {
+export async function hasAlwaysAllowRule(params: {
   userId: string;
   apiKeyId: string;
   requesterIp: string;
   method: string;
   url: URL;
-}): boolean {
+}): Promise<boolean> {
   const k = getAlwaysAllowKey({
     apiKeyId: params.apiKeyId,
     requesterIp: params.requesterIp,
@@ -45,7 +45,8 @@ export function hasAlwaysAllowRule(params: {
     url: params.url,
   });
 
-  const row = db()
+  const database = await db();
+  const row = (await database
     .query(
       "SELECT id FROM proxy_always_allow_rules WHERE user_id = ? AND api_key_id = ? AND requester_ip = ? AND method = ? AND upstream_host = ? AND upstream_path = ? AND revoked_at IS NULL LIMIT 1;"
     )
@@ -56,20 +57,20 @@ export function hasAlwaysAllowRule(params: {
       k.method,
       k.upstreamHost,
       k.upstreamPath
-    ) as {
+    )) as {
     id: string;
   } | null;
 
   return Boolean(row);
 }
 
-export function upsertAlwaysAllowRule(params: {
+export async function upsertAlwaysAllowRule(params: {
   userId: string;
   apiKeyId: string;
   requesterIp: string;
   method: string;
   url: URL;
-}): { ruleId: string } {
+}): Promise<{ ruleId: string }> {
   const k = getAlwaysAllowKey({
     apiKeyId: params.apiKeyId,
     requesterIp: params.requesterIp,
@@ -78,9 +79,10 @@ export function upsertAlwaysAllowRule(params: {
   });
   const id = ulid();
   const now = nowIso();
+  const database = await db();
 
   // If the rule already exists (even if previously revoked), re-enable it.
-  db()
+  await database
     .query(
       "INSERT INTO proxy_always_allow_rules (id, user_id, api_key_id, requester_ip, method, upstream_host, upstream_path, created_at, revoked_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL) " +
         "ON CONFLICT(user_id, api_key_id, requester_ip, method, upstream_host, upstream_path) DO UPDATE SET revoked_at = NULL;"
@@ -97,7 +99,7 @@ export function upsertAlwaysAllowRule(params: {
     );
 
   // Fetch the canonical id (might be the pre-existing row).
-  const row = db()
+  const row = (await database
     .query(
       "SELECT id FROM proxy_always_allow_rules WHERE user_id = ? AND api_key_id = ? AND requester_ip = ? AND method = ? AND upstream_host = ? AND upstream_path = ? AND revoked_at IS NULL LIMIT 1;"
     )
@@ -108,7 +110,7 @@ export function upsertAlwaysAllowRule(params: {
       k.method,
       k.upstreamHost,
       k.upstreamPath
-    ) as {
+    )) as {
     id: string;
   } | null;
 

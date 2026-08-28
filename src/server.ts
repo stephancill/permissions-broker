@@ -1,14 +1,9 @@
-import { Hono } from "hono";
+import { createApp } from "./app";
 import { migrate } from "./db/migrate";
 import { env } from "./env";
 
-import { accountRouter } from "./web/accounts";
-import { gitRouter } from "./web/git";
-import { proxyRouter } from "./web/proxy";
-import { whoamiRouter } from "./web/whoami";
-
 if (env.NODE_ENV !== "test") {
-  migrate();
+  await migrate();
 }
 
 if (env.TELEGRAM_BOT_TOKEN) {
@@ -27,15 +22,7 @@ if (env.NODE_ENV !== "test") {
   });
 }
 
-const app = new Hono();
-
-app.get("/", (c) => c.text("ok"));
-app.get("/healthz", (c) => c.json({ ok: true }));
-
-app.route("/v1/accounts", accountRouter);
-app.route("/v1/git", gitRouter);
-app.route("/v1/proxy", proxyRouter);
-app.route("/v1", whoamiRouter);
+const app = createApp({ includeGit: true });
 
 Bun.serve({
   port: env.PORT,

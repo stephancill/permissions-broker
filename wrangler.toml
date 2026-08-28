@@ -1,0 +1,17 @@
+name = "permissions-broker"
+main = "src/worker.ts"
+compatibility_date = "2026-07-18"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+routes = [
+  { pattern = "permissions-broker.stupidtech.net/*", zone_name = "stupidtech.net" }
+]
+
+[triggers]
+crons = ["* * * * *"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "permissions-broker"
+database_id = "02972638-483a-47c7-877a-1807ef493bc4"
+migrations_dir = "migrations"

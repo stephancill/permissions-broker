@@ -321,3 +321,6 @@ Implementation notes:
 
 - Added Cloudflare as a token-backed proxy provider for `https://api.cloudflare.com/client/v4/*` so agents can perform Wrangler-style Cloudflare API operations through Telegram approvals.
 - Added a broker-hosted `/v1/accounts/connect/cloudflare` form that verifies the Cloudflare API token, stores it encrypted, and exposes only non-secret account metadata via `GET /v1/accounts/`.
+- Added a Cloudflare Workers migration path for the core broker: shared Hono app factory, Worker entrypoint, D1-compatible async DB adapter, Telegram webhook route, cron-backed sweeper hook, and `wrangler.toml`.
+- Preserved the Bun server path for local/Railway use, including Telegram long polling. The Worker app now mounts `/v1/git/*`, with large clone/push operations still requiring production validation against Worker limits.
+- Added `docs/RAILWAY_TO_CLOUDFLARE_WORKERS.md` with D1 import, `APP_SECRET` preservation, Telegram webhook cutover, smoke test, and rollback steps.

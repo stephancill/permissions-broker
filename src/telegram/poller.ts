@@ -12,10 +12,11 @@ export async function startTelegramPoller(bot: Bot): Promise<void> {
   // Ensure we can receive updates via getUpdates in local/dev.
   await bot.api.deleteWebhook({ drop_pending_updates: false });
 
+  const database = await db();
   let lastUpdateId = (
-    db()
+    (await database
       .query("SELECT last_update_id FROM telegram_state WHERE id = 1;")
-      .get() as { last_update_id: number } | null
+      .get()) as { last_update_id: number } | null
   )?.last_update_id;
 
   if (typeof lastUpdateId !== "number") lastUpdateId = 0;
@@ -49,7 +50,7 @@ export async function startTelegramPoller(bot: Bot): Promise<void> {
         );
       } finally {
         lastUpdateId = u.update_id;
-        db()
+        await database
           .query("UPDATE telegram_state SET last_update_id = ? WHERE id = 1;")
           .run(lastUpdateId);
       }
