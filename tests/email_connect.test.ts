@@ -6,6 +6,7 @@ import { createConnectState } from "../src/connect/state";
 import { db } from "../src/db/client";
 import { migrate } from "../src/db/migrate";
 import { configureEnv, env } from "../src/env";
+import { matchKnownMxProvider } from "../src/providers/imap/discovery";
 import { accountRouter } from "../src/web/accounts";
 
 function nowIso(): string {
@@ -78,4 +79,29 @@ test("imap connect post requires fields", async () => {
   });
   expect(res.status).toBe(400);
   expect(await res.text()).toContain("missing fields");
+});
+
+test("IMAP host detection maps known MX providers to endpoints", () => {
+  expect(matchKnownMxProvider(["10 mx01.mail.icloud.com."])).toEqual({
+    host: "imap.mail.me.com",
+    port: 993,
+    secure: true,
+  });
+  expect(matchKnownMxProvider(["10 mx02.mail.icloud.com"])).toEqual({
+    host: "imap.mail.me.com",
+    port: 993,
+    secure: true,
+  });
+  expect(
+    matchKnownMxProvider([
+      "5 alt1.aspmx.l.google.com.",
+      "10 aspmx.l.google.com.",
+    ])
+  ).toEqual({ host: "imap.gmail.com", port: 993, secure: true });
+  expect(matchKnownMxProvider(["10 mx1.outlook.com"])).toEqual({
+    host: "outlook.office365.com",
+    port: 993,
+    secure: true,
+  });
+  expect(matchKnownMxProvider(["10 mail.someotherhost.com"])).toBeNull();
 });

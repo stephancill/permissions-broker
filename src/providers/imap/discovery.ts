@@ -13,6 +13,75 @@ export type ImapEndpoint = {
   secure: boolean;
 };
 
+type KnownMxProvider = {
+  marker: string;
+  endpoint: ImapEndpoint;
+};
+
+// Known mail providers detected by MX hostname marker. Only used as candidate
+// hints; a real login still verifies any endpoint before it is stored.
+const KNOWN_MX_PROVIDERS: KnownMxProvider[] = [
+  {
+    marker: "icloud.com",
+    endpoint: { host: "imap.mail.me.com", port: 993, secure: true },
+  },
+  {
+    marker: "googlemail.com",
+    endpoint: { host: "imap.gmail.com", port: 993, secure: true },
+  },
+  {
+    marker: "google.com",
+    endpoint: { host: "imap.gmail.com", port: 993, secure: true },
+  },
+  {
+    marker: "outlook.com",
+    endpoint: { host: "outlook.office365.com", port: 993, secure: true },
+  },
+  {
+    marker: "outlook365.com",
+    endpoint: { host: "outlook.office365.com", port: 993, secure: true },
+  },
+];
+
+export function matchKnownMxProvider(mxHosts: string[]): ImapEndpoint | null {
+  for (const mx of mxHosts) {
+    const lower = mx.toLowerCase();
+    for (const p of KNOWN_MX_PROVIDERS) {
+      if (lower.includes(p.marker)) return p.endpoint;
+    }
+  }
+  return null;
+}
+
+async function resolveMxViaDoh(domain: string): Promise<string[]> {
+  const ctrl = new AbortController();
+  const timeout = setTimeout(() => ctrl.abort(), 6_000);
+  try {
+    const res = await fetch(
+      `https://dns.google/resolve?name=${encodeURIComponent(domain)}&type=MX`,
+      { headers: { accept: "application/dns-json" }, signal: ctrl.signal }
+    );
+    if (!res.ok) return [];
+    const j = (await res.json()) as {
+      Answer?: Array<{ data?: string; type?: number }>;
+    };
+    return (j.Answer ?? [])
+      .filter((a) => a.type === 15 && typeof a.data === "string")
+      .map((a) => (a.data as string).trim());
+  } catch {
+    return [];
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function detectEndpointByMx(
+  domain: string
+): Promise<ImapEndpoint | null> {
+  const mxHosts = await resolveMxViaDoh(domain);
+  return matchKnownMxProvider(mxHosts);
+}
+
 export function emailDomain(email: string): string {
   const at = email.lastIndexOf("@");
   if (at === -1) throw new Error("invalid email address");
@@ -90,6 +159,8 @@ export async function discoverImapSettings(params: {
   const candidates: ImapEndpoint[] = [];
   const isp = await fetchIspbConfig(domain);
   if (isp) candidates.push(isp);
+  const mx = await detectEndpointByMx(domain);
+  if (mx) candidates.push(mx);
   candidates.push(...candidateEndpoints(domain));
 
   // Deduplicate by host:port.
