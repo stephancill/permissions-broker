@@ -7,6 +7,7 @@ import { createConnectState } from "../connect/state";
 import { randomBase64Url } from "../crypto/random";
 import { sha256Hex } from "../crypto/sha256";
 import { db } from "../db/client";
+import { setEmailSessionStatus } from "../email/sessions";
 import { env } from "../env";
 import { setGitSessionStatus } from "../git/sessions";
 import { buildAuthorizationUrl } from "../oauth/flow";
@@ -265,10 +266,13 @@ export function createBot(): Bot {
     );
   });
 
-  // Single source of truth: proxy provider registry.
-  // (Every proxy provider must be connectable in some way.)
-  const supportedProviders = listProxyProviderIds();
-  type SupportedProvider = ProxyProviderId;
+  // Connectable providers: every proxy provider plus the form-based IMAP email
+  // provider (read-only email access; not an HTTP proxy provider).
+  const supportedProviders: SupportedProvider[] = [
+    ...listProxyProviderIds(),
+    "imap",
+  ];
+  type SupportedProvider = ProxyProviderId | "imap";
 
   function nowIso(): string {
     return new Date().toISOString();
@@ -393,7 +397,7 @@ export function createBot(): Bot {
       );
     }
 
-    if (params.providerId === "cloudflare") {
+    if (params.providerId === "cloudflare" || params.providerId === "imap") {
       const { state } = await createConnectState({
         userId: params.userId,
         provider: params.providerId,
@@ -1001,6 +1005,61 @@ export function createBot(): Bot {
       }
     }
   );
+
+  bot.callbackQuery(/es:(approve|deny):(.+)/, async (ctx) => {
+    if (!ctx.from) return;
+    const action = ctx.match?.[1];
+    const sessionId = ctx.match?.[2];
+    const userId = await ensureUser(ctx.from.id);
+
+    const msg = ctx.callbackQuery.message;
+    if (!msg || !("message_id" in msg)) {
+      await answerCallbackQuerySafe(ctx, { text: "Missing message" });
+      return;
+    }
+
+    try {
+      if (action === "deny") {
+        await setEmailSessionStatus({ sessionId, userId, status: "DENIED" });
+        await auditEvent({
+          userId,
+          actorType: "telegram",
+          actorId: String(ctx.from.id),
+          eventType: "email_session_denied",
+          event: { sessionId },
+        });
+        await answerCallbackQuerySafe(ctx, { text: "denied" });
+      } else {
+        await setEmailSessionStatus({ sessionId, userId, status: "APPROVED" });
+        await auditEvent({
+          userId,
+          actorType: "telegram",
+          actorId: String(ctx.from.id),
+          eventType: "email_session_approved",
+          event: { sessionId },
+        });
+        await answerCallbackQuerySafe(ctx, { text: "approved" });
+      }
+
+      try {
+        if ("text" in msg && typeof msg.text === "string") {
+          const decision = action === "deny" ? "DENIED" : "APPROVED";
+          await ctx.editMessageText(
+            `${escapeHtml(msg.text)}\n\n<b>Decision</b>: <code>${escapeHtml(decision)}</code> (<code>${escapeHtml(nowIso())}</code>)`,
+            { parse_mode: "HTML" }
+          );
+        }
+        await ctx.editMessageReplyMarkup({
+          reply_markup: new InlineKeyboard(),
+        });
+      } catch {
+        // ignore
+      }
+    } catch (err) {
+      const em = err instanceof Error ? err.message : String(err);
+      await answerCallbackQuerySafe(ctx, { text: em });
+    }
+  });
 
   bot.on("message:text", async (ctx) => {
     if (!ctx.from) return;

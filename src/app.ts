@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 
 import { accountRouter } from "./web/accounts";
+import { emailRouter } from "./web/email";
 import { gitRouter } from "./web/git";
 import { proxyRouter } from "./web/proxy";
 import { whoamiRouter } from "./web/whoami";
@@ -27,6 +28,7 @@ export function createApp(options: CreateAppOptions = {}) {
   }
 
   app.route("/v1/accounts", accountRouter);
+  app.route("/v1/email", emailRouter);
   if (options.includeGit) app.route("/v1/git", gitRouter);
   app.route("/v1/proxy", proxyRouter);
   app.route("/v1", whoamiRouter);

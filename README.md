@@ -12,6 +12,7 @@ Telegram-controlled permissions gate + proxy API for third-party providers.
 - GitHub
 - Spotify
 - Cloudflare
+- Generic IMAP email (read-only, via `/v1/email`)
 
 ## Agent skill
 
@@ -102,6 +103,7 @@ In Telegram (to your bot):
 - `/connect github` (generates GitHub OAuth link)
 - `/connect spotify` (generates Spotify OAuth link)
 - `/connect cloudflare` (opens a token form; create a narrow Cloudflare API token first)
+- `/connect imap` (opens an email connect form; IMAP server is auto-detected; read-only, session-gated)
 - `/keys` (rename/revoke/rotate keys)
 
 ## Public API
@@ -115,8 +117,15 @@ Endpoints:
 - `POST /v1/proxy/request` (create a request; always prompts in Telegram)
 - `GET /v1/proxy/requests/:id` (poll status only)
 - `POST /v1/proxy/requests/:id/execute` (execute approved request and return upstream response)
+- `POST /v1/email/sessions` (create a read-only email session; Telegram approval required)
+- `GET /v1/email/sessions/:id` (poll session status)
+- `GET /v1/email/sessions/:id/folders` (list mailboxes)
+- `POST /v1/email/sessions/:id/search` (search messages; curated filters)
+- `POST /v1/email/sessions/:id/read` (read a message by UID; read-only)
 - `GET /v1/accounts/` (list linked/connected provider accounts for the authenticated user)
 - `GET /v1/whoami` (debug: verify API key auth)
+
+Email access details: `docs/EMAIL_IMAP.md`
 
 Upstream constraints
 

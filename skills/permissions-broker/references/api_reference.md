@@ -75,6 +75,49 @@ Connected services
     - `status`
     - other non-secret metadata
     - for Cloudflare, the broker may include non-secret account IDs/names to help agents form Wrangler-compatible requests
+    - for IMAP email, the broker may include non-secret `imap` metadata (host, port, email) to help agents address operations
+
+## Read-only Email (`/v1/email`)
+
+Generic IMAP email access, gated by a short-lived Telegram-approved session. Read-only by
+construction (mailboxes are opened with IMAP `EXAMINE`).
+
+Create session
+
+- `POST /v1/email/sessions`
+- JSON body:
+  - `consent_hint` (optional): short explanation for the user
+- Response:
+  - `session_id`
+  - `status` (typically `PENDING_APPROVAL`)
+  - `approval_expires_at`
+  - `read_only: true`
+
+Poll session
+
+- `GET /v1/email/sessions/:id`
+- Statuses: `PENDING_APPROVAL` (approve in Telegram), `APPROVED`, `ACTIVE`, `DENIED`, `EXPIRED`
+- Must use the same API key that created the session.
+
+List folders
+
+- `GET /v1/email/sessions/:id/folders`
+- Returns `folders`: `[{ path, delimiter, attributes, specialUse? }]`
+
+Search
+
+- `POST /v1/email/sessions/:id/search`
+- JSON body: `{ "mailbox": "INBOX", "query": {...}, "results_limit"? }`
+- Curated query filters: `subject`, `from`, `to`, `since` (`YYYY-MM-DD`, inclusive), `before` (`YYYY-MM-DD`, exclusive), `unseen`, `keyword`, `body_text`
+- `results_limit` default 50, max 200.
+- Returns `matches`: `[{ uid, date, subject, from }]`
+
+Read
+
+- `POST /v1/email/sessions/:id/read`
+- JSON body: `{ "mailbox": "INBOX", "uid": 123, "parts": { "text": true } }`
+- `parts` options: `envelope` (default true), `text`, `html`, `raw` (base64 RFC822 source).
+- Fetched message source capped at 1 MiB.
 
 ## Upstream URL Rules (MVP)
 

@@ -1,4 +1,5 @@
 import { db } from "../db/client";
+import { sweepEmailSessions } from "../email/sweeper";
 import { sweepGitSessions } from "../git/sweeper";
 
 function nowIso(): string {
@@ -19,6 +20,7 @@ export async function sweepApprovalExpirations(): Promise<number> {
 export async function sweepExpiredState(): Promise<void> {
   await sweepApprovalExpirations();
   await sweepGitSessions();
+  await sweepEmailSessions();
 }
 
 export async function startSweeperLoop(): Promise<void> {

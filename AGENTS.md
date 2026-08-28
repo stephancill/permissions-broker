@@ -72,12 +72,15 @@ Formatting/linting uses Biome.
 - `src/web/`: HTTP routes
   - `src/web/proxy.ts`: create/poll/execute proxy requests
   - `src/web/git.ts`: git session APIs + smart-HTTP proxy
+  - `src/web/email.ts`: read-only email session APIs (generic IMAP)
   - `src/web/accounts.ts`: OAuth callback + list accounts
 - `src/telegram/`: bot + polling
 - `src/oauth/`: generic OAuth flow + state handling
+- `src/email/`: read-only IMAP client, session persistence, curated ops
 - `src/providers/<provider>/`:
   - `oauth.ts`: OAuth provider config
   - `proxy.ts`: proxy-provider implementation (host allowlist, token handling, interpretation)
+- `src/providers/imap/`: IMAP host auto-detection (connect flow)
 - `src/proxy/`:
   - `providerRegistry.ts`: routes URL host -> provider
   - `requests.ts`: proxy request persistence + hashing
@@ -135,6 +138,15 @@ To add a new provider:
 
 Sessions are short-lived and approval-gated via Telegram.
 Push sessions enforce extra protections (no tags, no deletes, default branch gating).
+
+### Email read session lifecycle (`/v1/email`)
+
+- Create session: `POST /v1/email/sessions` (Telegram approval required)
+- Poll: `GET /v1/email/sessions/:id`
+- Read ops: `GET /sessions/:id/folders`, `POST /sessions/:id/search`, `POST /sessions/:id/read`
+- Sessions are short-lived, key-scoped, and **read-only by construction**:
+  the IMAP client (`src/email/client.ts`) exposes only `list`/`search`/`fetch`/`fetchOne`
+  and opens every mailbox with `EXAMINE`. Never add write methods there.
 
 ## Security/Privacy Rules
 

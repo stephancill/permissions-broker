@@ -7,15 +7,25 @@ import { getConnectState, markConnectStateUsed } from "../connect/state";
 import { decryptUtf8, encryptUtf8 } from "../crypto/aesgcm";
 import { sha256Hex } from "../crypto/sha256";
 import { db } from "../db/client";
+import { verifyImapConnection } from "../email/client";
+import { parseCredential, serializeCredential } from "../email/credential";
 import { env } from "../env";
 import { exchangeAuthorizationCode } from "../oauth/flow";
 import type { OAuthProviderConfig } from "../oauth/provider";
 import { getProvider } from "../oauth/registry";
 import { getOauthState, markOauthStateUsed } from "../oauth/state";
+import { discoverImapSettings } from "../providers/imap/discovery";
 
 type CloudflareAccountMetadata = {
   id: string;
   name?: string;
+};
+
+type ImapAccountMetadata = {
+  email: string;
+  host: string;
+  port: number;
+  secure: boolean;
 };
 
 function nowIso(): string {
@@ -71,6 +81,71 @@ function renderCloudflareConnectForm(params: { state: string }): string {
 }
 
 function renderCloudflareConnectResult(params: {
+  ok: boolean;
+  message: string;
+}): string {
+  const msg = escapeHtml(params.message);
+  const title = params.ok ? "Connected" : "Connection failed";
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>${escapeHtml(title)}</title>
+    <style>
+      body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; padding: 24px; max-width: 720px; margin: 0 auto; }
+      h1 { font-size: 20px; margin: 0 0 12px; }
+      p { color: #333; line-height: 1.4; }
+    </style>
+  </head>
+  <body>
+    <h1>${escapeHtml(title)}</h1>
+    <p>${msg}</p>
+    <p>You can return to Telegram.</p>
+  </body>
+</html>`;
+}
+
+function renderImapConnectForm(params: { state: string }): string {
+  const state = escapeHtml(params.state);
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Connect Email (IMAP)</title>
+    <style>
+      body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; padding: 24px; max-width: 720px; margin: 0 auto; }
+      h1 { font-size: 20px; margin: 0 0 12px; }
+      p { color: #333; line-height: 1.4; }
+      label { display: block; margin: 12px 0 6px; font-weight: 600; }
+      input { width: 100%; padding: 10px; font-size: 14px; }
+      button { margin-top: 16px; padding: 10px 14px; font-size: 14px; }
+      .note { font-size: 13px; color: #444; }
+      code { background: #f3f3f3; padding: 2px 4px; }
+    </style>
+  </head>
+  <body>
+    <h1>Connect Email (read-only IMAP)</h1>
+    <p>This will store your IMAP credentials encrypted at rest. Agents can only read your mail and only after Telegram approval — never modify or delete anything.</p>
+    <p class="note">Prefer an <b>app-specific password</b> where your provider offers one (e.g. Gmail, iCloud, Outlook). The IMAP server is auto-detected from your email address.</p>
+    <form method="post" action="/v1/accounts/connect/imap">
+      <input type="hidden" name="state" value="${state}" />
+      <label>Email address</label>
+      <input name="email" type="email" autocomplete="username" required />
+      <label>Password / app password</label>
+      <input name="password" type="password" autocomplete="current-password" required />
+      <label>IMAP host (optional; auto-detected when empty)</label>
+      <input name="host" type="text" autocomplete="off" placeholder="imap.example.com" />
+      <label>IMAP port (optional; default 993)</label>
+      <input name="port" type="number" autocomplete="off" placeholder="993" />
+      <button type="submit">Connect</button>
+    </form>
+  </body>
+</html>`;
+}
+
+function renderImapConnectResult(params: {
   ok: boolean;
   message: string;
 }): string {
@@ -184,11 +259,54 @@ accountRouter.get("/", requireApiKey, async (c) => {
     (typeof rows)[number] & {
       metadata?: {
         cloudflare_accounts?: CloudflareAccountMetadata[];
+        imap?: ImapAccountMetadata;
       };
     }
   > = [];
 
   for (const r of rows) {
+    if (r.provider === "imap") {
+      try {
+        if (!env.APP_SECRET) {
+          accounts.push(r);
+          continue;
+        }
+
+        const row = (await database
+          .query(
+            "SELECT refresh_token_ciphertext FROM linked_accounts WHERE user_id = ? AND provider = 'imap' AND provider_user_id = ? AND status = 'active' LIMIT 1;"
+          )
+          .get(auth.userId, r.provider_user_id)) as {
+          refresh_token_ciphertext: Uint8Array;
+        } | null;
+        if (!row) {
+          accounts.push(r);
+          continue;
+        }
+
+        const s = await decryptUtf8(row.refresh_token_ciphertext);
+        const cred = parseCredential(s);
+        accounts.push({
+          ...r,
+          ...(cred
+            ? {
+                metadata: {
+                  imap: {
+                    email: cred.email,
+                    host: cred.host,
+                    port: cred.port,
+                    secure: cred.secure,
+                  },
+                },
+              }
+            : {}),
+        });
+      } catch {
+        accounts.push(r);
+      }
+      continue;
+    }
+
     if (r.provider !== "cloudflare") {
       accounts.push(r);
       continue;
@@ -476,5 +594,152 @@ accountRouter.post("/connect/cloudflare", async (c) => {
       renderCloudflareConnectResult({ ok: false, message: msg }),
       400
     );
+  }
+});
+
+// IMAP email connect (broker-hosted form; non-OAuth, read-only)
+accountRouter.get("/connect/imap", async (c) => {
+  const state = c.req.query("state");
+  if (!state) return c.text("missing state", 400);
+
+  try {
+    await getConnectState({ state, provider: "imap" });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return c.html(renderImapConnectResult({ ok: false, message: msg }), 400);
+  }
+
+  return c.html(renderImapConnectForm({ state }));
+});
+
+accountRouter.post("/connect/imap", async (c) => {
+  if (!env.APP_SECRET) {
+    return c.html(
+      renderImapConnectResult({
+        ok: false,
+        message: "APP_SECRET not configured",
+      }),
+      500
+    );
+  }
+
+  const body = await c.req.parseBody();
+  const stateRaw = body.state;
+  const emailRaw = body.email;
+  const passwordRaw = body.password;
+  const hostRaw = body.host;
+  const portRaw = body.port;
+
+  const state = typeof stateRaw === "string" ? stateRaw.trim() : "";
+  const email =
+    typeof emailRaw === "string" ? emailRaw.trim().toLowerCase() : "";
+  const password = typeof passwordRaw === "string" ? passwordRaw : "";
+  const host = typeof hostRaw === "string" ? hostRaw.trim() : "";
+  const portInput = typeof portRaw === "string" ? portRaw.trim() : "";
+
+  if (!state || !email || !password) {
+    return c.html(
+      renderImapConnectResult({ ok: false, message: "missing fields" }),
+      400
+    );
+  }
+  if (!email.includes("@")) {
+    return c.html(
+      renderImapConnectResult({ ok: false, message: "invalid email address" }),
+      400
+    );
+  }
+
+  let userId: string;
+  try {
+    ({ userId } = await getConnectState({ state, provider: "imap" }));
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return c.html(renderImapConnectResult({ ok: false, message: msg }), 400);
+  }
+
+  try {
+    let endpoint: { host: string; port: number; secure: boolean };
+    if (host) {
+      const port = portInput ? Number(portInput) : 993;
+      if (!Number.isInteger(port) || port < 1 || port > 65535) {
+        return c.html(
+          renderImapConnectResult({ ok: false, message: "invalid port" }),
+          400
+        );
+      }
+      const secure = port !== 143;
+      // Verify the manual override before storing anything.
+      await verifyImapConnection({ host, port, secure, email, password });
+      endpoint = { host, port, secure };
+    } else {
+      endpoint = await discoverImapSettings({ email, password });
+    }
+
+    const providerUserId = await sha256Hex(email);
+    const credentialJson = serializeCredential({
+      email,
+      password,
+      host: endpoint.host,
+      port: endpoint.port,
+      secure: endpoint.secure,
+    });
+    const ct = await encryptUtf8(credentialJson);
+    const now = nowIso();
+
+    const database = await db();
+    const existing = (await database
+      .query(
+        "SELECT id FROM linked_accounts WHERE user_id = ? AND provider = 'imap' AND status = 'active' LIMIT 1;"
+      )
+      .get(userId)) as { id: string } | null;
+
+    if (existing) {
+      await database
+        .query(
+          "UPDATE linked_accounts SET provider_user_id = ?, scopes = ?, refresh_token_ciphertext = ?, status = 'active', revoked_at = NULL WHERE id = ?;"
+        )
+        .run(providerUserId, "read", ct, existing.id);
+    } else {
+      await database
+        .query(
+          "INSERT INTO linked_accounts (id, user_id, provider, provider_user_id, scopes, refresh_token_ciphertext, status, created_at, revoked_at) VALUES (?, ?, 'imap', ?, ?, ?, 'active', ?, NULL);"
+        )
+        .run(ulid(), userId, providerUserId, "read", ct, now);
+    }
+
+    await markConnectStateUsed(state);
+
+    await auditEvent({
+      userId,
+      actorType: "system",
+      actorId: "connect_imap",
+      eventType: "linked_account_updated",
+      event: { provider: "imap", scopes: "read" },
+    });
+
+    const telegram = (await database
+      .query("SELECT telegram_user_id FROM users WHERE id = ?;")
+      .get(userId)) as { telegram_user_id: number } | null;
+    if (telegram?.telegram_user_id && env.TELEGRAM_BOT_TOKEN) {
+      const { createBot } = await import("../telegram/bot");
+      const bot = createBot();
+      await bot.api
+        .sendMessage(
+          telegram.telegram_user_id,
+          `Connected imap (${endpoint.host}).`
+        )
+        .catch(() => {});
+    }
+
+    return c.html(
+      renderImapConnectResult({
+        ok: true,
+        message: `Email connected (${endpoint.host}). Return to Telegram.`,
+      })
+    );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return c.html(renderImapConnectResult({ ok: false, message: msg }), 400);
   }
 });

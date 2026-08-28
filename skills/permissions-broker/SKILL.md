@@ -1,6 +1,6 @@
 ---
 name: permissions-broker
-description: Use the Permissions Broker for approval-gated external API access and Git smart-HTTP operations when local credentials are unavailable or not desired. Use the bundled Python CLI at skills/permissions-broker/scripts/pb_proxy.py for proxy requests (create, poll, execute) instead of hand-writing polling logic. Supports Google, GitHub, Spotify, and Cloudflare.
+description: Use the Permissions Broker for approval-gated external API access, Git smart-HTTP operations, and read-only email access when local credentials are unavailable or not desired. Use the bundled Python CLI at skills/permissions-broker/scripts/pb_proxy.py for proxy requests (create, poll, execute) instead of hand-writing polling logic. Supports Google, GitHub, Spotify, Cloudflare, and generic IMAP email (read-only).
 ---
 
 # Permissions Broker
@@ -122,6 +122,42 @@ Notes:
 - Push sessions are single-use.
 - Tag pushes and ref deletes are rejected.
 - Default branch pushes may be blocked unless explicitly approved.
+
+## Read-only Email (Separate from /v1/proxy)
+
+IMAP email access (`/v1/email`) is session-gated and strictly read-only.
+
+Flow:
+
+1. Confirm the user has connected email (`/connect imap` in Telegram opens a broker-hosted
+   form; the IMAP server is auto-detected from their address).
+2. Create a session: `POST /v1/email/sessions` with `{ "consent_hint": "..." }`.
+3. Poll the Telegram approval: `GET /v1/email/sessions/:id`.
+4. Once `APPROVED`/`ACTIVE`, run read-only operations within the session window:
+
+```bash
+# list mailboxes
+curl -H "Authorization: Bearer $PB_API_KEY" \
+  $PB_BASE/v1/email/sessions/$SESSION_ID/folders
+
+# search (curated filters only)
+curl -X POST -H "Authorization: Bearer $PB_API_KEY" -H "content-type: application/json" \
+  -d '{"mailbox":"INBOX","query":{"subject":"invoice","unseen":true}}' \
+  $PB_BASE/v1/email/sessions/$SESSION_ID/search
+
+# read a message (uid from search)
+curl -X POST -H "Authorization: Bearer $PB_API_KEY" -H "content-type: application/json" \
+  -d '{"mailbox":"INBOX","uid":123,"parts":{"text":true}}' \
+  $PB_BASE/v1/email/sessions/$SESSION_ID/read
+```
+
+Rules:
+
+- Sessions expire automatically (10 min).
+- Only read operations exist; the broker opens mailboxes read-only (IMAP `EXAMINE`) and
+  cannot modify, delete, or send mail.
+- Request `text`/`html` bodies (or small `envelope`) to keep approvals and responses small;
+  fetched message source is capped at 1 MiB.
 
 ## Security Rules
 
