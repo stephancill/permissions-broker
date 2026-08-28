@@ -38,6 +38,11 @@ type ConnectParams = {
   password: string;
 };
 
+function isIpLiteral(host: string): boolean {
+  // SNI (servername) must not be set for IP literals; Node rejects it.
+  return /^\d{1,3}(\.\d{1,3}){3}$/.test(host) || host.includes(":");
+}
+
 const CONNECTION_TIMEOUT_MS = 15_000;
 const GREETING_TIMEOUT_MS = 10_000;
 const SOCKET_TIMEOUT_MS = 20_000;
@@ -54,7 +59,7 @@ export function buildImapClient(c: ConnectParams): ImapFlow {
     host: c.host,
     port: c.port,
     secure: c.secure,
-    servername: c.host,
+    ...(isIpLiteral(c.host) ? {} : { servername: c.host }),
     disableAutoIdle: true,
     disableCompression: true,
     logger: false,
@@ -128,7 +133,7 @@ export async function verifyImapConnection(
     host: params.host,
     port: params.port,
     secure: params.secure,
-    servername: params.host,
+    ...(isIpLiteral(params.host) ? {} : { servername: params.host }),
     disableAutoIdle: true,
     disableCompression: true,
     logger: false,

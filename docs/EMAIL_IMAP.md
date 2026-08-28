@@ -99,6 +99,49 @@ Returns message metadata, flags, and the requested parts.
 - All mailbox selections use IMAP `EXAMINE` (read-only) via
   `getMailboxLock(path, { readOnly: true })`, so even a bug cannot mutate mail.
 
+## Testing
+
+### Offline end-to-end (no account needed)
+
+A bundled harness boots a throwaway plaintext IMAP server (seeded with two sample
+messages) and runs the full read path through the real HTTP handlers, simulating the
+Telegram approval:
+
+```bash
+bun scripts/email_e2e.ts
+```
+
+You should see `create session`, `approve`, `folders`, `search`, and `read` all return
+HTTP 200, with the searched subjects and the decoded message text. The mini IMAP server
+lives in `scripts/imap_test_server.ts` and can also be run standalone:
+
+```bash
+bun scripts/imap_test_server.ts   # imap://127.0.0.1:11430 (test@example.com / testpass)
+```
+
+### Real account end-to-end
+
+1. `bun --env-file .env.local run dev` (requires `TELEGRAM_BOT_TOKEN`, `APP_BASE_URL`,
+   `APP_SECRET` in `.env.local`).
+2. In Telegram: `/connect imap` → open the link → enter email + password (the IMAP
+   server is auto-detected and verified; for Gmail/iCloud/Outlook use an app password).
+3. Create and approve a session, then read:
+
+```bash
+SESSION=$(curl -s -X POST -H "Authorization: Bearer $PB_API_KEY" -H 'content-type: application/json' \
+  -d '{"consent_hint":"trying email access"}' $APP_BASE_URL/v1/email/sessions \
+  | jq -r .session_id)
+
+curl -s -H "Authorization: Bearer $PB_API_KEY" $APP_BASE_URL/v1/email/sessions/$SESSION/folders
+curl -s -X POST -H "Authorization: Bearer $PB_API_KEY" -H 'content-type: application/json' \
+  -d '{"mailbox":"INBOX","query":{"unseen":true}}' $APP_BASE_URL/v1/email/sessions/$SESSION/search
+curl -s -X POST -H "Authorization: Bearer $PB_API_KEY" -H 'content-type: application/json' \
+  -d '{"mailbox":"INBOX","uid":1,"parts":{"text":true}}' $APP_BASE_URL/v1/email/sessions/$SESSION/read
+```
+
+Approve the Telegram prompt to see the session move `PENDING_APPROVAL → APPROVED/ACTIVE`
+and the read endpoints return mail.
+
 ## Runtime note
 
 The IMAP client (`imapflow`) uses `node:net`/`node:tls`, which are supported natively on
