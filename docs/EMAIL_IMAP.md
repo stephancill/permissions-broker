@@ -92,12 +92,13 @@ Returns message metadata, flags, and the requested parts.
 
 ## Read-only enforcement
 
-- `src/email/client.ts` is the only module that opens IMAP connections; it documents the
-  enforced read-only surface and never exposes write methods.
+- `src/email/client.ts` is the only module that opens IMAP connections, backed by a
+  hand-rolled protocol client (`src/email/protocol.ts`) that implements only read
+  operations (LIST / EXAMINE / SEARCH / read FETCHs).
 - `src/email/ops.ts` exposes exactly three operations: `listFolders`, `searchEmails`,
-  `readEmail` — using only `list` / `search` / `fetch` / `fetchOne`.
-- All mailbox selections use IMAP `EXAMINE` (read-only) via
-  `getMailboxLock(path, { readOnly: true })`, so even a bug cannot mutate mail.
+  `readEmail`.
+- All mailbox selections use IMAP `EXAMINE` (read-only), so the server itself rejects any
+  mutation. Even a bug cannot mutate mail.
 
 ## Testing
 
@@ -144,8 +145,12 @@ and the read endpoints return mail.
 
 ## Runtime note
 
-The IMAP client (`imapflow`) uses `node:net`/`node:tls`, which are supported natively on
-Cloudflare Workers (via the TCP Sockets API) with `nodejs_compat`. The existing Worker
-deployment (`wrangler.toml`) can serve email operations directly. Only outbound port 25 is
-blocked by Workers; IMAP 993/143 are fine. Keep timeouts short (the client defaults to
-15 s connect / 20 s socket) to stay within Worker limits.
+The IMAP client uses `node:net`/`node:tls`, which are supported natively on Cloudflare
+Workers (via the TCP Sockets API) with `nodejs_compat`. The existing Worker deployment
+(`wrangler.toml`) serves email operations directly. Outbound port 25 is blocked by
+Workers; IMAP 993/143 are fine. The protocol reader yields to the event loop between
+chunks so large messages stay within the Worker CPU budget. Each operation opens its own
+connection (one command per request), so no single request exceeds Worker limits. A
+hand-rolled protocol client (`src/email/protocol.ts`) is used instead of `imapflow`
+because `imapflow`'s stream handling does not work on the Worker `node:net`/`node:tls`
+shim while the raw socket APIs do.

@@ -185,8 +185,6 @@ export async function discoverImapSettings(params: {
         email: params.email,
         password: params.password,
         connectionTimeout: 6_000,
-        greetingTimeout: 5_000,
-        socketTimeout: 8_000,
       });
       return c;
     } catch {

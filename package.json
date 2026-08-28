@@ -15,7 +15,6 @@
   "dependencies": {
     "grammy": "^1.39.3",
     "hono": "^4.11.9",
-    "imapflow": "^1.7.6",
     "mailparser": "^3.9.16",
     "oauth4webapi": "^3.8.4",
     "ulid": "^3.0.2",

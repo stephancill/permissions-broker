@@ -1,13 +1,12 @@
-import type { ImapFlow, MessageEnvelopeObject } from "imapflow";
 import { simpleParser } from "mailparser";
-
 import { ImapError, MAX_SOURCE_BYTES } from "./client";
+import type { ImapClient, ImapCriteria, ImapFolder } from "./protocol";
 
 // READ-ONLY OPERATIONS
 // --------------------
-// Only these three operations exist. Each opens the target mailbox in read-only
-// mode (getMailboxLock(..., { readOnly: true }) => IMAP EXAMINE) and uses only
-// list / search / fetch / fetchOne. No write method is ever invoked.
+// Only these three operations exist. Each opens the target mailbox read-only
+// (IMAP EXAMINE) and the underlying protocol module issues only LIST / EXAMINE /
+// SEARCH / read FETCHs. No write method is ever invoked.
 
 export type EmailFolder = {
   path: string;
@@ -16,13 +15,13 @@ export type EmailFolder = {
   specialUse?: string;
 };
 
-export async function listFolders(client: ImapFlow): Promise<EmailFolder[]> {
-  const list = await client.list();
-  return list.map((m) => ({
-    path: m.path,
-    delimiter: m.delimiter,
-    attributes: [...m.flags],
-    ...(m.specialUse ? { specialUse: m.specialUse } : {}),
+export async function listFolders(client: ImapClient): Promise<EmailFolder[]> {
+  const folders: ImapFolder[] = await client.list();
+  return folders.map((f) => ({
+    path: f.path,
+    delimiter: f.delimiter,
+    attributes: [...f.attributes],
+    ...(f.specialUse ? { specialUse: f.specialUse } : {}),
   }));
 }
 
@@ -44,71 +43,43 @@ export type EmailSearchHit = {
   from: string;
 };
 
-// Maps a curated query into an imapflow SearchObject. Kept as its own pure
-// function so it can be unit-tested without a live IMAP connection.
-export function buildSearchObject(
-  query: EmailSearchQuery
-): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
+// Maps a curated query into IMAP criteria. Kept as its own pure function so it
+// can be unit-tested without a live IMAP connection.
+export function buildSearchObject(query: EmailSearchQuery): ImapCriteria {
+  const out: ImapCriteria = {};
   if (query.subject) out.subject = query.subject;
   if (query.from) out.from = query.from;
   if (query.to) out.to = query.to;
   if (query.since) out.since = new Date(`${query.since}T00:00:00Z`);
   if (query.before) out.before = new Date(`${query.before}T00:00:00Z`);
-  if (query.unseen === true) out.seen = false;
-  if (query.unseen === false) out.seen = true;
+  if (query.unseen === true) out.unseen = true;
+  if (query.unseen === false) out.unseen = false;
   if (query.keyword) out.keyword = query.keyword;
   if (query.bodyText) out.body = query.bodyText;
   return out;
 }
 
 export async function searchEmails(params: {
-  client: ImapFlow;
+  client: ImapClient;
   mailbox: string;
   query: EmailSearchQuery;
   limit: number;
 }): Promise<EmailSearchHit[]> {
-  const lock = await params.client.getMailboxLock(params.mailbox, {
-    readOnly: true,
+  await params.client.examine(params.mailbox);
+  const uids = await params.client.uidSearch(buildSearchObject(params.query));
+  if (uids.length === 0) return [];
+
+  const slice = uids.slice(0, params.limit);
+  const meta = await params.client.fetchHeaders(slice);
+  return slice.map((uid) => {
+    const m = meta.get(uid);
+    return {
+      uid,
+      date: m?.date ?? "",
+      subject: m?.subject ?? "",
+      from: m?.from ?? "",
+    };
   });
-  try {
-    const search = buildSearchObject(params.query);
-    // An empty query matches everything in the mailbox.
-    if (Object.keys(search).length === 0) search.all = true;
-    const uids = await params.client.search(
-      search as Parameters<typeof params.client.search>[0],
-      { uid: true }
-    );
-    if (!uids || uids.length === 0) return [];
-
-    const hits: EmailSearchHit[] = [];
-    const slice = uids.slice(0, params.limit);
-    for await (const msg of params.client.fetch(slice, {
-      uid: true,
-      envelope: true,
-      internalDate: true,
-    })) {
-      hits.push({
-        uid: msg.uid,
-        date: msg.internalDate ? new Date(msg.internalDate).toISOString() : "",
-        subject: msg.envelope?.subject ?? "",
-        from: formatAddresses(msg.envelope?.from),
-      });
-    }
-    return hits;
-  } finally {
-    lock.release();
-  }
-}
-
-export function formatAddresses(
-  addresses: MessageEnvelopeObject["from"] | undefined
-): string {
-  if (!addresses) return "";
-  return addresses
-    .map((a) => a.address ?? a.name ?? "")
-    .filter(Boolean)
-    .join(", ");
 }
 
 export type EmailReadParts = {
@@ -133,67 +104,76 @@ export type EmailReadResult = {
   rawBase64?: string;
 };
 
-function serializeMessageId(
-  e: MessageEnvelopeObject | undefined
-): string | undefined {
-  return e?.messageId || undefined;
+function extractAddresses(
+  value: unknown
+): Array<{ address?: string; name?: string }> {
+  if (Array.isArray(value)) {
+    const out: Array<{ address?: string; name?: string }> = [];
+    for (const item of value) out.push(...extractAddresses(item));
+    return out;
+  }
+  if (value && typeof value === "object") {
+    const inner = (value as { value?: unknown }).value;
+    if (Array.isArray(inner)) {
+      const addresses: Array<{ address?: string; name?: string }> = [];
+      for (const a of inner) {
+        if (a && typeof a === "object") {
+          const o = a as { address?: unknown; name?: unknown };
+          addresses.push({
+            address: typeof o.address === "string" ? o.address : undefined,
+            name: typeof o.name === "string" ? o.name : undefined,
+          });
+        }
+      }
+      return addresses;
+    }
+  }
+  return [];
+}
+
+function formatAddresses(value: unknown): string {
+  return extractAddresses(value)
+    .map((a) => a.address ?? a.name ?? "")
+    .filter(Boolean)
+    .join(", ");
 }
 
 export async function readEmail(params: {
-  client: ImapFlow;
+  client: ImapClient;
   mailbox: string;
   uid: number;
   parts: EmailReadParts;
 }): Promise<EmailReadResult> {
-  const lock = await params.client.getMailboxLock(params.mailbox, {
-    readOnly: true,
+  await params.client.examine(params.mailbox);
+  const got = await params.client.fetchOne({
+    uid: params.uid,
+    maxSourceBytes: MAX_SOURCE_BYTES,
   });
-  try {
-    const wantSource = Boolean(
-      params.parts.text || params.parts.html || params.parts.raw
-    );
-    const msg = await params.client.fetchOne(
-      String(params.uid),
-      {
-        uid: true,
-        envelope: true,
-        internalDate: true,
-        size: true,
-        flags: true,
-        source: wantSource
-          ? { start: 0, maxLength: MAX_SOURCE_BYTES }
-          : undefined,
-      },
-      { uid: true }
-    );
+  if (!got.source) throw new ImapError("NOT_FOUND", "message not found");
 
-    if (!msg) throw new ImapError("NOT_FOUND", "message not found");
+  const parsed = await simpleParser(got.source);
 
-    const result: EmailReadResult = {
-      uid: msg.uid,
-      date: msg.internalDate ? new Date(msg.internalDate).toISOString() : "",
-      flags: msg.flags ? [...msg.flags] : [],
-      subject: msg.envelope?.subject ?? "",
-      from: formatAddresses(msg.envelope?.from),
-      to: formatAddresses(msg.envelope?.to),
-      cc: formatAddresses(msg.envelope?.cc),
-      replyTo: formatAddresses(msg.envelope?.replyTo),
-      messageId: serializeMessageId(msg.envelope),
-    };
+  const result: EmailReadResult = {
+    uid: got.uid,
+    date: got.internalDate
+      ? got.internalDate.toISOString()
+      : parsed.date
+        ? parsed.date.toISOString()
+        : "",
+    flags: got.flags,
+    subject: parsed.subject ?? "",
+    from: formatAddresses(parsed.from),
+    to: formatAddresses(parsed.to),
+    cc: formatAddresses(parsed.cc),
+    replyTo: formatAddresses(parsed.replyTo),
+    messageId: parsed.messageId || undefined,
+  };
 
-    if (msg.source) {
-      if (params.parts.raw) {
-        result.rawBase64 = msg.source.toString("base64");
-      }
-      if (params.parts.text || params.parts.html) {
-        const parsed = await simpleParser(msg.source);
-        if (params.parts.text) result.text = parsed.text || undefined;
-        if (params.parts.html) result.html = parsed.html || undefined;
-      }
-    }
-
-    return result;
-  } finally {
-    lock.release();
+  if (params.parts.raw) {
+    result.rawBase64 = got.source.toString("base64");
   }
+  if (params.parts.text) result.text = parsed.text || undefined;
+  if (params.parts.html) result.html = parsed.html || undefined;
+
+  return result;
 }

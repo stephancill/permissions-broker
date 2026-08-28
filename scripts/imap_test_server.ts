@@ -96,32 +96,6 @@ function quoted(s: string): string {
   return `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 }
 
-function addrMailbox(email: string): { mailbox: string; host: string } {
-  const trimmed = email.trim();
-  const at = trimmed.lastIndexOf("@");
-  if (at === -1) return { mailbox: trimmed, host: "" };
-  return { mailbox: trimmed.slice(0, at), host: trimmed.slice(at + 1) };
-}
-
-function addrEntry(email: string): string {
-  const a = addrMailbox(email);
-  return `(NIL "US-ASCII" ${quoted(a.mailbox)} ${quoted(a.host)})`;
-}
-
-function addrList(email: string | undefined): string {
-  return email ? `(${addrEntry(email)})` : "NIL";
-}
-
-function envelopeOf(m: ImapTestMessage): string {
-  const from = m.raw.match(/^From: (.+)$/m)?.[1]?.replace(/^.*<|>$/g, "") ?? "";
-  const to = m.raw.match(/^To: (.+)$/m)?.[1]?.replace(/^.*<|>$/g, "") ?? "";
-  const id =
-    m.raw.match(/^Message-ID: (.+)$/m)?.[1]?.trim() ?? m.messageId ?? "";
-  return `(${quoted(m.date)} ${quoted(m.subject)} ${addrList(from)} ${addrList(
-    from
-  )} NIL ${addrList(to)} NIL NIL ${quoted(id)} ${quoted(id)})`;
-}
-
 function imapDateTime(d: Date): string {
   const months = [
     "Jan",
@@ -362,8 +336,12 @@ export function startImapTestServer(params?: {
       return;
     }
 
-    // Unknown command: respond NO so imapflow surfaces the gap loudly.
+    // Unknown command: respond NO so the client surfaces the gap loudly.
     socket.write(`${tag} NO command not implemented\r\n`);
+  }
+
+  function headersOf(m: ImapTestMessage): string {
+    return m.raw.split("\r\n\r\n", 1)[0] ?? m.raw;
   }
 
   function sendFetch(
@@ -377,7 +355,8 @@ export function startImapTestServer(params?: {
       (m) => m.mailbox === (state.selected ?? "INBOX")
     );
     const wanted = resolveRange(seqSet, mailboxMessages.length);
-    const hasBody = /BODY(\.PEEK)?\[/i.test(items);
+    const wantHeader = /BODY(?:\.PEEK)?\[HEADER\]/i.test(items);
+    const hasBody = /BODY(?:\.PEEK)?\[\]/i.test(items);
 
     const responses = wanted.map((seq) => {
       const m = mailboxMessages[seq - 1];
@@ -389,9 +368,14 @@ export function startImapTestServer(params?: {
         parts.push(`INTERNALDATE ${quoted(imapDateTime(m.internalDate))}`);
       if (/RFC822\.SIZE/i.test(items))
         parts.push(`RFC822.SIZE ${Buffer.byteLength(m.raw)}`);
-      if (/ENVELOPE/i.test(items)) parts.push(`ENVELOPE ${envelopeOf(m)}`);
-      if (hasBody)
+      if (wantHeader) {
+        const headers = headersOf(m);
+        parts.push(
+          `BODY[HEADER] {${Buffer.byteLength(headers)}}\r\n${headers}`
+        );
+      } else if (hasBody) {
         parts.push(`BODY[] {${Buffer.byteLength(m.raw)}}\r\n${m.raw}`);
+      }
       return `* ${seq} FETCH (${parts.join(" ")})`;
     });
 

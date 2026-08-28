@@ -19,3 +19,6 @@ data/
 .playwright-cli/
 
 .tmp/
+
+# Local Wrangler/Miniflare state
+.wrangler/

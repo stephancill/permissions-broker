@@ -267,13 +267,17 @@ test("buildSearchObject maps curated query to imap search criteria", () => {
   expect(obj.since).toBeInstanceOf(Date);
   expect((obj.since as Date).toISOString()).toBe("2026-01-01T00:00:00.000Z");
   expect(obj.before).toBeInstanceOf(Date);
-  expect(obj.seen).toBe(false);
+  expect(obj.unseen).toBe(true);
   expect(obj.keyword).toBe("important");
   expect(obj.body).toBe("receipt");
 });
 
 test("read-only surface: email modules never reference IMAP write commands", async () => {
-  const files = ["src/email/client.ts", "src/email/ops.ts"];
+  const files = [
+    "src/email/client.ts",
+    "src/email/ops.ts",
+    "src/email/protocol.ts",
+  ];
   const forbidden = [
     "messageDelete(",
     "messageFlagsAdd(",
