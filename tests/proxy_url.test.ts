@@ -22,11 +22,6 @@ describe("validateUpstreamUrl", () => {
     expect(url.hostname).toBe("sheets.googleapis.com");
   });
 
-  test("accepts caldav.icloud.com", () => {
-    const url = validateUpstreamUrl("https://caldav.icloud.com/");
-    expect(url.hostname).toBe("caldav.icloud.com");
-  });
-
   test("rejects non-https", () => {
     expect(() =>
       validateUpstreamUrl("http://docs.googleapis.com/v1/documents/abc")

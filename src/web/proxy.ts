@@ -245,66 +245,6 @@ async function fetchWithAllowedRedirects(params: {
   throw new Error("too many redirects");
 }
 
-async function maybeLookupIcloudCollectionDisplayName(params: {
-  objectUrl: URL;
-  provider: ProxyProvider;
-  userId: string;
-  storedCredential: string;
-}): Promise<string | null> {
-  const collectionUrl = new URL(params.objectUrl.toString());
-  collectionUrl.pathname = collectionUrl.pathname.replace(/[^/]+$/, "");
-  if (!collectionUrl.pathname.endsWith("/")) {
-    collectionUrl.pathname = `${collectionUrl.pathname}/`;
-  }
-
-  const allow = await params.provider.isAllowedUpstreamUrl({
-    userId: params.userId,
-    url: collectionUrl,
-    storedCredential: params.storedCredential,
-  });
-  if (!allow.allowed) return null;
-
-  const authorization = await params.provider.getAuthorizationHeaderValue({
-    storedCredential: params.storedCredential,
-  });
-
-  const headers = new Headers();
-  headers.set("authorization", authorization);
-  headers.set("depth", "0");
-  headers.set("content-type", "application/xml; charset=utf-8");
-  headers.set("accept", "application/xml, text/xml");
-
-  const body = `<?xml version="1.0" encoding="UTF-8"?>\n<D:propfind xmlns:D="DAV:">\n  <D:prop>\n    <D:displayname />\n  </D:prop>\n</D:propfind>\n`;
-
-  const ctrl = new AbortController();
-  const timeout = setTimeout(() => ctrl.abort(), 10_000);
-  try {
-    const res = await fetchWithAllowedRedirects({
-      url: collectionUrl.toString(),
-      init: {
-        method: "PROPFIND",
-        headers,
-        body,
-        signal: ctrl.signal,
-      },
-      maxRedirects: 5,
-      provider: params.provider,
-      userId: params.userId,
-      storedCredential: params.storedCredential,
-    });
-
-    if (res.status !== 207 && res.status !== 200) return null;
-    const text = await res.text();
-    const m = text.match(/<[^>]*displayname[^>]*>([^<]*)<\/[^>]*displayname>/i);
-    const name = m?.[1]?.trim();
-    return name || null;
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
 function formatQueryForTelegram(url: URL): string {
   if (!url.search) return "";
 
@@ -792,32 +732,9 @@ proxyRouter.post("/request", requireApiKey, async (c) => {
     );
   }
 
-  let storedCredentialForValidation: string | undefined;
-  if (provider.id === "icloud") {
-    if (!env.APP_SECRET) {
-      return c.json({ error: "server_misconfigured" }, 500);
-    }
-
-    const acct = db()
-      .query(
-        "SELECT refresh_token_ciphertext FROM linked_accounts WHERE user_id = ? AND provider = ? AND status = 'active' LIMIT 1;"
-      )
-      .get(auth.userId, provider.id) as {
-      refresh_token_ciphertext: Uint8Array;
-    } | null;
-    if (!acct) {
-      return c.json({ error: "no_linked_account", provider: provider.id }, 409);
-    }
-
-    storedCredentialForValidation = await decryptUtf8(
-      acct.refresh_token_ciphertext
-    );
-  }
-
   const allow = await provider.isAllowedUpstreamUrl({
     userId: auth.userId,
     url: validatedUrl,
-    storedCredential: storedCredentialForValidation,
   });
   if (!allow.allowed) {
     return c.json(
@@ -956,45 +873,9 @@ proxyRouter.post("/request", requireApiKey, async (c) => {
         headers: normalizedHeaders,
         bodyJson: decodedForInterpret.bodyJson,
         bodyText: decodedForInterpret.bodyText,
-        storedCredential:
-          provider.id === "icloud" ? storedCredentialForValidation : undefined,
       });
 
-      let detailsForTelegram = interpreted.details;
-
-      // iCloud: enrich PUT approvals with a just-in-time collection name.
-      // This does an upstream PROPFIND (Depth: 0) to fetch the collection displayname.
-      if (
-        provider.id === "icloud" &&
-        storedCredentialForValidation &&
-        methodNorm === "PUT" &&
-        interpreted.details.length
-      ) {
-        const name = await maybeLookupIcloudCollectionDisplayName({
-          objectUrl: url,
-          provider,
-          userId: auth.userId,
-          storedCredential: storedCredentialForValidation,
-        });
-        if (name) {
-          const details = [...interpreted.details];
-          const kindIdx = details.findIndex((d) => d.startsWith("kind: "));
-          if (kindIdx !== -1) {
-            const kind = details[kindIdx].slice("kind: ".length).trim();
-            const label =
-              kind === "Event"
-                ? "calendar"
-                : kind === "Reminder"
-                  ? "list"
-                  : "collection";
-            // Insert after kind line.
-            details.splice(kindIdx + 1, 0, `${label}: ${name}`);
-            detailsForTelegram = details;
-          } else {
-            detailsForTelegram = [`collection: ${name}`, ...details];
-          }
-        }
-      }
+      const detailsForTelegram = interpreted.details;
 
       const queryLine =
         detailsForTelegram.length === 0 ? formatQueryForTelegram(url) : "";

@@ -1,11 +1,6 @@
 import type { InterpretedRequest, ProxyInterpretInput } from "./interpret";
 
-export type ProxyProviderId =
-  | "google"
-  | "github"
-  | "icloud"
-  | "spotify"
-  | "cloudflare";
+export type ProxyProviderId = "google" | "github" | "spotify" | "cloudflare";
 
 export type ProxyProvider = {
   id: ProxyProviderId;
@@ -15,8 +10,6 @@ export type ProxyProvider = {
   matchesUrl(url: URL): boolean;
 
   // Validate that the upstream URL is allowed for this user.
-  // For some providers (e.g. iCloud), this is dynamic and depends on discovery
-  // results stored in the linked account.
   isAllowedUpstreamUrl(params: {
     userId: string;
     url: URL;
@@ -34,7 +27,6 @@ export type ProxyProvider = {
   // Examples:
   // - Google: "Bearer <access_token>"
   // - GitHub: "Bearer <token>"
-  // - iCloud CalDAV: "Basic <base64(username:app_password)>"
   getAuthorizationHeaderValue(params: {
     storedCredential: string;
   }): Promise<string>;

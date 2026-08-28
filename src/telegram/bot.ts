@@ -382,7 +382,7 @@ export function createBot(): Bot {
       );
     }
 
-    if (params.providerId === "icloud" || params.providerId === "cloudflare") {
+    if (params.providerId === "cloudflare") {
       const { state } = createConnectState({
         userId: params.userId,
         provider: params.providerId,

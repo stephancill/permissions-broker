@@ -10,7 +10,6 @@ Telegram-controlled permissions gate + proxy API for third-party providers.
 
 - Google (Drive/Docs/Sheets)
 - GitHub
-- iCloud (CalDAV)
 - Spotify
 - Cloudflare
 
