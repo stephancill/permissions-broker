@@ -51,7 +51,7 @@ This MVP intentionally optimizes for:
   - hosts allowed: docs.googleapis.com, www.googleapis.com
   - method allowed: GET only
   - request bodies disallowed
-- Approval TTL: 2 minutes
+- Approval TTL: 5 minutes (proxy requests and git sessions; raised from 2 for passkey approvals)
 - No result caching; execution returns upstream bytes directly
 - Upstream response size cap: 1 MiB
 - API key labels:
@@ -269,7 +269,7 @@ Behavior:
 
 - Create proxy_requests row with:
   - status = PENDING_APPROVAL
-  - approval_expires_at = now + 2 minutes
+  - approval_expires_at = now + 5 minutes
   - api_key_label_snapshot from the key at creation time
 - Send Telegram message prompting approval.
 

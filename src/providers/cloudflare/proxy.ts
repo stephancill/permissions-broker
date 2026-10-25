@@ -177,10 +177,10 @@ export const cloudflareProxyProvider: ProxyProvider = {
 
   async getAuthorizationHeaderValue(params: {
     storedCredential: string;
-  }): Promise<string> {
+  }): Promise<{ authorization: string }> {
     const cred = parseCredential(params.storedCredential);
     if (!cred) throw new Error("invalid Cloudflare credential");
-    return `Bearer ${cred.apiToken}`;
+    return { authorization: `Bearer ${cred.apiToken}` };
   },
 
   applyUpstreamRequestHeaderDefaults(params: {

@@ -5,6 +5,7 @@ const COMMAND_REFRESH_MS = 24 * 60 * 60 * 1000;
 
 const botCommands = [
   { command: "start", description: "Start permissions broker" },
+  { command: "passkey", description: "Set up or replace your passkey" },
   { command: "connect", description: "Link or manage provider accounts" },
   { command: "key", description: "Create a new API key" },
   { command: "keys", description: "List, rotate, rename, or revoke API keys" },

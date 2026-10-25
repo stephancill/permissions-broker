@@ -27,9 +27,11 @@ export type ProxyProvider = {
   // Examples:
   // - Google: "Bearer <access_token>"
   // - GitHub: "Bearer <token>"
+  // `updatedCredential` is set when the provider issued a replacement
+  // credential (e.g. a rotated refresh token) that must be stored.
   getAuthorizationHeaderValue(params: {
     storedCredential: string;
-  }): Promise<string>;
+  }): Promise<{ authorization: string; updatedCredential?: string }>;
 
   // Allow a provider to set defaults or required headers.
   applyUpstreamRequestHeaderDefaults(params: {

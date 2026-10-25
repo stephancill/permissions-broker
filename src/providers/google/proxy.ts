@@ -143,12 +143,17 @@ export const googleProxyProvider: ProxyProvider = {
 
   async getAuthorizationHeaderValue(params: {
     storedCredential: string;
-  }): Promise<string> {
+  }): Promise<{ authorization: string; updatedCredential?: string }> {
     const token = await refreshAccessToken({
       provider: googleProvider(),
       refreshToken: params.storedCredential,
     });
-    return `Bearer ${token.access_token}`;
+    const rotated = token.refresh_token;
+    return {
+      authorization: `Bearer ${token.access_token}`,
+      updatedCredential:
+        rotated && rotated !== params.storedCredential ? rotated : undefined,
+    };
   },
 
   applyUpstreamRequestHeaderDefaults(): void {

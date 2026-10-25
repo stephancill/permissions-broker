@@ -60,6 +60,12 @@ Execute (retrieve upstream bytes)
   - Sets `Content-Type` to the upstream `content-type` when present.
   - Adds `X-Proxy-Request-Id: <id>`.
   - If the broker rejects execution (not approved/expired/forbidden/etc.), it returns JSON `{error: ...}`.
+  - `409 {error: "credential_unavailable", code: "NO_GRANT" | "GRANT_EXPIRED" | "DECRYPT_FAILED"}` means the passkey approval did not release a usable key for the linked credential; create a new request and have the user approve again.
+
+Approvals
+
+- The user approves in Telegram via a Review & approve link that requires their passkey; Telegram buttons can only deny.
+- A user may approve an endpoint for 15/60 minutes. Requests from the same API key and IP to the same method + host + path are then created as `APPROVED` immediately.
 
 Debug
 

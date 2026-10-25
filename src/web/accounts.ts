@@ -1,14 +1,17 @@
 import { Hono } from "hono";
-import { ulid } from "ulid";
 
 import { auditEvent } from "../audit/audit";
 import { requireApiKey } from "../auth/apiKey";
 import { getConnectState, markConnectStateUsed } from "../connect/state";
-import { decryptUtf8, encryptUtf8 } from "../crypto/aesgcm";
+import {
+  CredentialError,
+  isEnrolled,
+  saveLinkedCredential,
+} from "../credentials/store";
 import { sha256Hex } from "../crypto/sha256";
 import { db } from "../db/client";
 import { verifyImapConnection } from "../email/client";
-import { parseCredential, serializeCredential } from "../email/credential";
+import { serializeCredential } from "../email/credential";
 import { env } from "../env";
 import { exchangeAuthorizationCode } from "../oauth/flow";
 import type { OAuthProviderConfig } from "../oauth/provider";
@@ -28,9 +31,8 @@ type ImapAccountMetadata = {
   secure: boolean;
 };
 
-function nowIso(): string {
-  return new Date().toISOString();
-}
+const NOT_ENROLLED_MESSAGE =
+  "Set up a passkey first: send /passkey to the Telegram bot, then reconnect.";
 
 export const accountRouter = new Hono();
 
@@ -64,7 +66,7 @@ function renderCloudflareConnectForm(params: { state: string }): string {
   </head>
   <body>
     <h1>Connect Cloudflare</h1>
-    <p>This will store a Cloudflare API token encrypted at rest and use it only after Telegram approvals.</p>
+    <p>The token is encrypted to your passkey; the broker can only use it after you approve a request with your passkey.</p>
     <p class="note">Create a narrowly scoped token in Cloudflare: <code>My Profile &gt; API Tokens</code>. Wrangler commonly needs account-level Workers, KV, D1, R2, Pages, or Zone permissions depending on the command.</p>
     <form method="post" action="/v1/accounts/connect/cloudflare">
       <input type="hidden" name="state" value="${state}" />
@@ -127,7 +129,7 @@ function renderImapConnectForm(params: { state: string }): string {
   </head>
   <body>
     <h1>Connect Email (read-only IMAP)</h1>
-    <p>This will store your IMAP credentials encrypted at rest. Agents can only read your mail and only after Telegram approval — never modify or delete anything.</p>
+    <p>Your IMAP credentials are encrypted to your passkey. Agents can only read your mail and only after you approve with your passkey — never modify or delete anything.</p>
     <p class="note">Prefer an <b>app-specific password</b> where your provider offers one (e.g. Gmail, iCloud, Outlook). The IMAP server is auto-detected from your email address.</p>
     <form method="post" action="/v1/accounts/connect/imap">
       <input type="hidden" name="state" value="${state}" />
@@ -169,22 +171,6 @@ function renderImapConnectResult(params: {
     <p>You can return to Telegram.</p>
   </body>
 </html>`;
-}
-
-function parseCloudflareAccounts(
-  storedCredential: string
-): CloudflareAccountMetadata[] {
-  const parsed = JSON.parse(storedCredential) as { accounts?: unknown };
-  if (!Array.isArray(parsed.accounts)) return [];
-  return parsed.accounts
-    .map((x) => {
-      if (!x || typeof x !== "object" || Array.isArray(x)) return null;
-      const account = x as Record<string, unknown>;
-      const id = typeof account.id === "string" ? account.id : null;
-      const name = typeof account.name === "string" ? account.name : undefined;
-      return id ? { id, name } : null;
-    })
-    .filter((x) => x != null);
 }
 
 async function verifyCloudflareToken(apiToken: string): Promise<string> {
@@ -244,7 +230,7 @@ accountRouter.get("/", requireApiKey, async (c) => {
   const database = await db();
   const rows = (await database
     .query(
-      "SELECT provider, provider_user_id, scopes, status, created_at, revoked_at FROM linked_accounts WHERE user_id = ? ORDER BY created_at DESC;"
+      "SELECT provider, provider_user_id, scopes, status, created_at, revoked_at, metadata_json FROM linked_accounts WHERE user_id = ? ORDER BY created_at DESC;"
     )
     .all(auth.userId)) as {
     provider: string;
@@ -253,92 +239,23 @@ accountRouter.get("/", requireApiKey, async (c) => {
     status: string;
     created_at: string;
     revoked_at: string | null;
+    metadata_json: string | null;
   }[];
 
-  const accounts: Array<
-    (typeof rows)[number] & {
-      metadata?: {
+  // Display metadata is stored in plaintext at connect time; credentials are
+  // never decrypted to list accounts.
+  const accounts = rows.map(({ metadata_json, ...r }) => {
+    if (!metadata_json || r.status !== "active") return r;
+    try {
+      const metadata = JSON.parse(metadata_json) as {
         cloudflare_accounts?: CloudflareAccountMetadata[];
         imap?: ImapAccountMetadata;
       };
-    }
-  > = [];
-
-  for (const r of rows) {
-    if (r.provider === "imap") {
-      try {
-        if (!env.APP_SECRET) {
-          accounts.push(r);
-          continue;
-        }
-
-        const row = (await database
-          .query(
-            "SELECT refresh_token_ciphertext FROM linked_accounts WHERE user_id = ? AND provider = 'imap' AND provider_user_id = ? AND status = 'active' LIMIT 1;"
-          )
-          .get(auth.userId, r.provider_user_id)) as {
-          refresh_token_ciphertext: Uint8Array;
-        } | null;
-        if (!row) {
-          accounts.push(r);
-          continue;
-        }
-
-        const s = await decryptUtf8(row.refresh_token_ciphertext);
-        const cred = parseCredential(s);
-        accounts.push({
-          ...r,
-          ...(cred
-            ? {
-                metadata: {
-                  imap: {
-                    email: cred.email,
-                    host: cred.host,
-                    port: cred.port,
-                    secure: cred.secure,
-                  },
-                },
-              }
-            : {}),
-        });
-      } catch {
-        accounts.push(r);
-      }
-      continue;
-    }
-
-    if (r.provider !== "cloudflare") {
-      accounts.push(r);
-      continue;
-    }
-
-    try {
-      if (!env.APP_SECRET) {
-        accounts.push(r);
-        continue;
-      }
-
-      const row = (await database
-        .query(
-          "SELECT refresh_token_ciphertext FROM linked_accounts WHERE user_id = ? AND provider = 'cloudflare' AND provider_user_id = ? AND status = 'active' LIMIT 1;"
-        )
-        .get(auth.userId, r.provider_user_id)) as {
-        refresh_token_ciphertext: Uint8Array;
-      } | null;
-      if (!row) {
-        accounts.push(r);
-        continue;
-      }
-
-      const s = await decryptUtf8(row.refresh_token_ciphertext);
-      accounts.push({
-        ...r,
-        metadata: { cloudflare_accounts: parseCloudflareAccounts(s) },
-      });
+      return { ...r, metadata };
     } catch {
-      accounts.push(r);
+      return r;
     }
-  }
+  });
 
   return c.json({ accounts });
 });
@@ -356,7 +273,6 @@ accountRouter.get("/callback/:provider", async (c) => {
   }
 
   if (!env.APP_BASE_URL) return c.text("APP_BASE_URL not configured", 500);
-  if (!env.APP_SECRET) return c.text("APP_SECRET not configured", 500);
   const redirectUri = `${env.APP_BASE_URL}/v1/accounts/callback/${providerId}`;
 
   const { userId, pkceVerifier } = await getOauthState({
@@ -390,12 +306,9 @@ accountRouter.get("/callback/:provider", async (c) => {
   const database = await db();
   const existing = (await database
     .query(
-      "SELECT id, refresh_token_ciphertext FROM linked_accounts WHERE user_id = ? AND provider = ? AND status = 'active' LIMIT 1;"
+      "SELECT id FROM linked_accounts WHERE user_id = ? AND provider = ? AND status = 'active' LIMIT 1;"
     )
-    .get(userId, providerId)) as {
-    id: string;
-    refresh_token_ciphertext: Uint8Array;
-  } | null;
+    .get(userId, providerId)) as { id: string } | null;
 
   const tokenToStore = refreshToken ?? accessToken;
   if (!tokenToStore && !existing) {
@@ -405,31 +318,27 @@ accountRouter.get("/callback/:provider", async (c) => {
     );
   }
 
-  const providerUserId = "unknown";
-  const now = nowIso();
-
-  if (existing) {
-    if (tokenToStore) {
-      const ct = await encryptUtf8(tokenToStore);
-      await database
-        .query(
-          "UPDATE linked_accounts SET scopes = ?, refresh_token_ciphertext = ?, status = 'active', revoked_at = NULL WHERE id = ?;"
-        )
-        .run(scopes, ct, existing.id);
-    } else {
-      await database
-        .query(
-          "UPDATE linked_accounts SET scopes = ?, status = 'active', revoked_at = NULL WHERE id = ?;"
-        )
-        .run(scopes, existing.id);
+  if (tokenToStore) {
+    try {
+      await saveLinkedCredential({
+        userId,
+        provider: providerId,
+        providerUserId: "unknown",
+        scopes,
+        plaintext: tokenToStore,
+      });
+    } catch (err) {
+      if (err instanceof CredentialError && err.code === "NOT_ENROLLED") {
+        return c.text(NOT_ENROLLED_MESSAGE, 409);
+      }
+      throw err;
     }
-  } else {
-    const ct = await encryptUtf8(tokenToStore as string);
+  } else if (existing) {
     await database
       .query(
-        "INSERT INTO linked_accounts (id, user_id, provider, provider_user_id, scopes, refresh_token_ciphertext, status, created_at, revoked_at) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, NULL);"
+        "UPDATE linked_accounts SET scopes = ?, status = 'active', revoked_at = NULL WHERE id = ?;"
       )
-      .run(ulid(), userId, providerId, providerUserId, scopes, ct, now);
+      .run(scopes, existing.id);
   }
 
   await auditEvent({
@@ -464,7 +373,16 @@ accountRouter.get("/connect/cloudflare", async (c) => {
   if (!state) return c.text("missing state", 400);
 
   try {
-    await getConnectState({ state, provider: "cloudflare" });
+    const { userId } = await getConnectState({ state, provider: "cloudflare" });
+    if (!(await isEnrolled(userId))) {
+      return c.html(
+        renderCloudflareConnectResult({
+          ok: false,
+          message: NOT_ENROLLED_MESSAGE,
+        }),
+        409
+      );
+    }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return c.html(
@@ -477,16 +395,6 @@ accountRouter.get("/connect/cloudflare", async (c) => {
 });
 
 accountRouter.post("/connect/cloudflare", async (c) => {
-  if (!env.APP_SECRET) {
-    return c.html(
-      renderCloudflareConnectResult({
-        ok: false,
-        message: "APP_SECRET not configured",
-      }),
-      500
-    );
-  }
-
   const body = await c.req.parseBody();
   const stateRaw = body.state;
   const apiTokenRaw = body.api_token;
@@ -533,34 +441,19 @@ accountRouter.post("/connect/cloudflare", async (c) => {
 
     const providerUserId =
       tokenId === "unknown" ? await sha256Hex(apiToken) : tokenId;
-    const credentialJson = JSON.stringify({ apiToken, accounts });
-    const ct = await encryptUtf8(credentialJson);
-    const now = nowIso();
     const scopes = accounts.length
       ? `api_token accounts=${accounts.map((x) => x.id).join(",")}`
       : "api_token";
 
+    await saveLinkedCredential({
+      userId,
+      provider: "cloudflare",
+      providerUserId,
+      scopes,
+      plaintext: JSON.stringify({ apiToken, accounts }),
+    });
+
     const database = await db();
-    const existing = (await database
-      .query(
-        "SELECT id FROM linked_accounts WHERE user_id = ? AND provider = 'cloudflare' AND status = 'active' LIMIT 1;"
-      )
-      .get(userId)) as { id: string } | null;
-
-    if (existing) {
-      await database
-        .query(
-          "UPDATE linked_accounts SET provider_user_id = ?, scopes = ?, refresh_token_ciphertext = ?, status = 'active', revoked_at = NULL WHERE id = ?;"
-        )
-        .run(providerUserId, scopes, ct, existing.id);
-    } else {
-      await database
-        .query(
-          "INSERT INTO linked_accounts (id, user_id, provider, provider_user_id, scopes, refresh_token_ciphertext, status, created_at, revoked_at) VALUES (?, ?, 'cloudflare', ?, ?, ?, 'active', ?, NULL);"
-        )
-        .run(ulid(), userId, providerUserId, scopes, ct, now);
-    }
-
     await markConnectStateUsed(state);
 
     await auditEvent({
@@ -603,7 +496,13 @@ accountRouter.get("/connect/imap", async (c) => {
   if (!state) return c.text("missing state", 400);
 
   try {
-    await getConnectState({ state, provider: "imap" });
+    const { userId } = await getConnectState({ state, provider: "imap" });
+    if (!(await isEnrolled(userId))) {
+      return c.html(
+        renderImapConnectResult({ ok: false, message: NOT_ENROLLED_MESSAGE }),
+        409
+      );
+    }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return c.html(renderImapConnectResult({ ok: false, message: msg }), 400);
@@ -613,16 +512,6 @@ accountRouter.get("/connect/imap", async (c) => {
 });
 
 accountRouter.post("/connect/imap", async (c) => {
-  if (!env.APP_SECRET) {
-    return c.html(
-      renderImapConnectResult({
-        ok: false,
-        message: "APP_SECRET not configured",
-      }),
-      500
-    );
-  }
-
   const body = await c.req.parseBody();
   const stateRaw = body.state;
   const emailRaw = body.email;
@@ -676,38 +565,21 @@ accountRouter.post("/connect/imap", async (c) => {
       endpoint = await discoverImapSettings({ email, password });
     }
 
-    const providerUserId = await sha256Hex(email);
-    const credentialJson = serializeCredential({
-      email,
-      password,
-      host: endpoint.host,
-      port: endpoint.port,
-      secure: endpoint.secure,
+    await saveLinkedCredential({
+      userId,
+      provider: "imap",
+      providerUserId: await sha256Hex(email),
+      scopes: "read",
+      plaintext: serializeCredential({
+        email,
+        password,
+        host: endpoint.host,
+        port: endpoint.port,
+        secure: endpoint.secure,
+      }),
     });
-    const ct = await encryptUtf8(credentialJson);
-    const now = nowIso();
 
     const database = await db();
-    const existing = (await database
-      .query(
-        "SELECT id FROM linked_accounts WHERE user_id = ? AND provider = 'imap' AND status = 'active' LIMIT 1;"
-      )
-      .get(userId)) as { id: string } | null;
-
-    if (existing) {
-      await database
-        .query(
-          "UPDATE linked_accounts SET provider_user_id = ?, scopes = ?, refresh_token_ciphertext = ?, status = 'active', revoked_at = NULL WHERE id = ?;"
-        )
-        .run(providerUserId, "read", ct, existing.id);
-    } else {
-      await database
-        .query(
-          "INSERT INTO linked_accounts (id, user_id, provider, provider_user_id, scopes, refresh_token_ciphertext, status, created_at, revoked_at) VALUES (?, ?, 'imap', ?, ?, ?, 'active', ?, NULL);"
-        )
-        .run(ulid(), userId, providerUserId, "read", ct, now);
-    }
-
     await markConnectStateUsed(state);
 
     await auditEvent({

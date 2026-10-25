@@ -5,7 +5,7 @@ import { ulid } from "ulid";
 import { sha256Hex } from "../src/crypto/sha256";
 import { db } from "../src/db/client";
 import { migrate } from "../src/db/migrate";
-import { upsertAlwaysAllowRule } from "../src/proxy/alwaysAllow";
+import { createApprovalWindow } from "../src/proxy/approvalWindows";
 import { proxyRouter } from "../src/web/proxy";
 
 type JsonRecord = Record<string, unknown>;
@@ -21,7 +21,7 @@ async function setupDb() {
   const database = await db();
   await database.exec("DELETE FROM approvals;");
   await database.exec("DELETE FROM proxy_requests;");
-  await database.exec("DELETE FROM proxy_always_allow_rules;");
+  await database.exec("DELETE FROM approval_windows;");
   await database.exec("DELETE FROM linked_accounts;");
   await database.exec("DELETE FROM api_keys;");
   await database.exec("DELETE FROM users;");
@@ -61,7 +61,23 @@ function app() {
   return a;
 }
 
-test("always allow: /request auto-approves matching endpoints", async () => {
+async function requestGithubUser(ip: string) {
+  return app().request("/v1/proxy/request", {
+    method: "POST",
+    // Simulate a proxied deployment that passes through the client IP.
+    headers: {
+      authorization: "Bearer pb_test_key_a",
+      "content-type": "application/json",
+      "x-forwarded-for": ip,
+    },
+    body: JSON.stringify({
+      upstream_url: "https://api.github.com/user",
+      method: "GET",
+    }),
+  });
+}
+
+test("approval window: /request auto-approves matching endpoints", async () => {
   await setupDb();
 
   const userId = await insertUser();
@@ -71,36 +87,55 @@ test("always allow: /request auto-approves matching endpoints", async () => {
     keyPlain: "pb_test_key_a",
   });
 
-  // Create permanent allow rule for GET api.github.com/user, scoped to key/IP.
-  await upsertAlwaysAllowRule({
+  // Window for GET api.github.com/user, scoped to key/IP.
+  const { windowId } = await createApprovalWindow({
     userId,
     apiKeyId: keyA.apiKeyId,
     requesterIp: "203.0.113.10",
     method: "GET",
     url: new URL("https://api.github.com/user"),
+    grantId: "grant_test",
+    expiresAt: new Date(Date.now() + 15 * 60_000).toISOString(),
   });
 
-  const res = await app().request("/v1/proxy/request", {
-    method: "POST",
-    // Simulate a proxied deployment that passes through the client IP.
-    headers: {
-      authorization: "Bearer pb_test_key_a",
-      "content-type": "application/json",
-      "x-forwarded-for": "203.0.113.10",
-    },
-    body: JSON.stringify({
-      upstream_url: "https://api.github.com/user",
-      method: "GET",
-    }),
-  });
-
+  const res = await requestGithubUser("203.0.113.10");
   expect(res.status).toBe(200);
   const j = (await res.json()) as JsonRecord;
   expect(j.status).toBe("APPROVED");
 
   const database = await db();
   const row = (await database
-    .query("SELECT status FROM proxy_requests WHERE id = ? LIMIT 1;")
-    .get(j.request_id as string)) as { status: string };
+    .query("SELECT status, grant_id FROM proxy_requests WHERE id = ? LIMIT 1;")
+    .get(j.request_id as string)) as { status: string; grant_id: string };
   expect(row.status).toBe("APPROVED");
+  expect(row.grant_id).toBe("grant_test");
+
+  // Other requester IPs still need approval.
+  const other = await requestGithubUser("198.51.100.1");
+  expect(((await other.json()) as JsonRecord).status).toBe("PENDING_APPROVAL");
+  expect(windowId).toBeTruthy();
+});
+
+test("approval window: expired windows do not auto-approve", async () => {
+  await setupDb();
+
+  const userId = await insertUser();
+  const keyA = await insertApiKey({
+    userId,
+    label: "keyA",
+    keyPlain: "pb_test_key_a",
+  });
+
+  await createApprovalWindow({
+    userId,
+    apiKeyId: keyA.apiKeyId,
+    requesterIp: "203.0.113.10",
+    method: "GET",
+    url: new URL("https://api.github.com/user"),
+    grantId: null,
+    expiresAt: new Date(Date.now() - 1000).toISOString(),
+  });
+
+  const res = await requestGithubUser("203.0.113.10");
+  expect(((await res.json()) as JsonRecord).status).toBe("PENDING_APPROVAL");
 });

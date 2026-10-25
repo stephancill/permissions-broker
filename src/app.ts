@@ -1,8 +1,10 @@
 import { Hono } from "hono";
 
 import { accountRouter } from "./web/accounts";
+import { approveRouter } from "./web/approve";
 import { emailRouter } from "./web/email";
 import { gitRouter } from "./web/git";
+import { passkeyRouter } from "./web/passkey";
 import { proxyRouter } from "./web/proxy";
 import { whoamiRouter } from "./web/whoami";
 
@@ -26,6 +28,10 @@ export function createApp(options: CreateAppOptions = {}) {
       return c.json({ ok: true });
     });
   }
+
+  // Browser pages for passkey enrollment and approvals.
+  app.route("/passkey", passkeyRouter);
+  app.route("/approve", approveRouter);
 
   app.route("/v1/accounts", accountRouter);
   app.route("/v1/email", emailRouter);

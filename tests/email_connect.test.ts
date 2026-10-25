@@ -29,24 +29,55 @@ test("imap connect form requires a state", async () => {
   expect(await res.text()).toBe("missing state");
 });
 
-test("imap connect form renders for a valid state", async () => {
+async function insertUser(telegramUserId: number): Promise<string> {
   const userId = ulid();
   const database = await db();
   await database
     .query(
       "INSERT INTO users (id, telegram_user_id, created_at, status) VALUES (?, ?, ?, 'active');"
     )
-    .run(userId, 999, nowIso());
+    .run(userId, telegramUserId, nowIso());
+  return userId;
+}
+
+async function imapFormFor(userId: string) {
   const { state } = await createConnectState({
     userId,
     provider: "imap",
     ttlMs: 60_000,
   });
-
-  const res = await app().request(
+  return app().request(
     `/v1/accounts/connect/imap?state=${encodeURIComponent(state)}`,
     {}
   );
+}
+
+test("imap connect form requires an enrolled passkey", async () => {
+  const userId = await insertUser(998);
+  const res = await imapFormFor(userId);
+  expect(res.status).toBe(409);
+  expect(await res.text()).toContain("/passkey");
+});
+
+test("imap connect form renders for a valid state", async () => {
+  const userId = await insertUser(999);
+  // Enrollment stores the user's public key; credentials are encrypted to it.
+  const pair = (await crypto.subtle.generateKey(
+    { name: "ECDH", namedCurve: "P-256" },
+    true,
+    ["deriveBits"]
+  )) as CryptoKeyPair;
+  const publicKey = new Uint8Array(
+    await crypto.subtle.exportKey("raw", pair.publicKey)
+  );
+  const database = await db();
+  await database
+    .query(
+      "INSERT INTO user_keys (user_id, public_key, wrapped_private_key, created_at, updated_at) VALUES (?, ?, ?, ?, ?);"
+    )
+    .run(userId, publicKey, new Uint8Array(80), nowIso(), nowIso());
+
+  const res = await imapFormFor(userId);
   expect(res.status).toBe(200);
   const html = await res.text();
   expect(html).toContain("Connect Email");

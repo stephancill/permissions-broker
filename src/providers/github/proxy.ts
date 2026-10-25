@@ -88,9 +88,9 @@ export const githubProxyProvider: ProxyProvider = {
 
   async getAuthorizationHeaderValue(params: {
     storedCredential: string;
-  }): Promise<string> {
+  }): Promise<{ authorization: string }> {
     // GitHub OAuth (classic app): treat stored token as an access token.
-    return `Bearer ${params.storedCredential}`;
+    return { authorization: `Bearer ${params.storedCredential}` };
   },
 
   applyUpstreamRequestHeaderDefaults(params: {

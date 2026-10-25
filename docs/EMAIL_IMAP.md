@@ -24,7 +24,7 @@ A user links an email account from Telegram:
    - each candidate is verified by actually connecting and authenticating before it is
      used. A manual host/port override is also supported.
 4. The verified credential `{ email, password, host, port, secure }` is stored
-   **encrypted at rest** (`APP_SECRET`) in `linked_accounts` with `provider='imap'`,
+   **encrypted to the user's passkey-held key** (see `docs/PASSKEY_CREDENTIAL_ENCRYPTION.md`) in `linked_accounts` with `provider='imap'`,
    `scopes='read'`.
 
 ## Session model
@@ -32,7 +32,7 @@ A user links an email account from Telegram:
 Email access is session-based (mirrors `/v1/git`):
 
 - `POST /v1/email/sessions` — creates a `PENDING_APPROVAL` session (10 min TTL) and
-  prompts the user in Telegram with **Approve / Deny** buttons.
+  prompts the user in Telegram with a **Review & approve** link (passkey approval) and a **Deny** button.
 - The session is scoped to the exact API key that created it (like `/v1/proxy` and
   `/v1/git`).
 - After approval the session becomes `APPROVED` (then `ACTIVE` on first use). Reads are

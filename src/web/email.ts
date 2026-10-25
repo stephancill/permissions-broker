@@ -4,7 +4,11 @@ import { z } from "zod";
 
 import { auditEvent } from "../audit/audit";
 import { type ApiKeyAuth, requireApiKey } from "../auth/apiKey";
-import { decryptUtf8 } from "../crypto/aesgcm";
+import {
+  CredentialError,
+  findGrantId,
+  unlockCredential,
+} from "../credentials/store";
 import { db } from "../db/client";
 import { type ImapError, withImapConnection } from "../email/client";
 import { type ImapCredential, parseCredential } from "../email/credential";
@@ -17,6 +21,7 @@ import {
   touchEmailSessionActivity,
 } from "../email/sessions";
 import { env } from "../env";
+import { approvalUrl } from "../passkey/webauthn";
 import { telegramApi } from "../telegram/api";
 
 const SESSION_TTL_MS = 10 * 60_000;
@@ -135,21 +140,40 @@ async function loadAuthorizedSession(
   const database = await db();
   const acct = (await database
     .query(
-      "SELECT refresh_token_ciphertext FROM linked_accounts WHERE user_id = ? AND provider = 'imap' AND status = 'active' LIMIT 1;"
+      "SELECT id FROM linked_accounts WHERE user_id = ? AND provider = 'imap' AND status = 'active' LIMIT 1;"
     )
-    .get(auth.userId)) as { refresh_token_ciphertext: Uint8Array } | null;
+    .get(auth.userId)) as { id: string } | null;
 
   if (!acct)
     return { ok: false, response: c.json({ error: "no_linked_imap" }, 409) };
-  if (!env.APP_SECRET)
-    return {
-      ok: false,
-      response: c.json({ error: "server_misconfigured" }, 500),
-    };
+
+  // The session's passkey approval released a key for the IMAP credential.
+  let stored: string;
+  try {
+    const unlocked = await unlockCredential({
+      grantId: await findGrantId({ targetKind: "email", targetId: session.id }),
+      userId: auth.userId,
+    });
+    stored = unlocked.plaintext;
+  } catch (err) {
+    if (err instanceof CredentialError) {
+      return {
+        ok: false,
+        response: c.json(
+          {
+            error: "credential_unavailable",
+            code: err.code,
+            message: err.message,
+          },
+          409
+        ),
+      };
+    }
+    throw err;
+  }
 
   let credential: ImapCredential;
   try {
-    const stored = await decryptUtf8(acct.refresh_token_ciphertext);
     const parsed = parseCredential(stored);
     if (!parsed)
       return {
@@ -248,15 +272,16 @@ emailRouter.post("/sessions", requireApiKey, async (c) => {
     }
     lines.push("");
     lines.push(
-      "Approving lets the agent list folders, search, and read messages for up to 10 minutes."
+      "Approving lets the agent list folders, search, and read messages until the session goes idle for 10 minutes."
     );
+    lines.push("Review and approve with your passkey (opens in Safari).");
 
     const kb = {
       inline_keyboard: [
         [
           {
-            text: "Approve",
-            callback_data: `es:approve:${created.sessionId}`,
+            text: "Review & approve",
+            url: await approvalUrl({ kind: "email", id: created.sessionId }),
           },
           { text: "Deny", callback_data: `es:deny:${created.sessionId}` },
         ],

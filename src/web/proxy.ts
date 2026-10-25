@@ -4,16 +4,23 @@ import { z } from "zod";
 
 import { auditEvent } from "../audit/audit";
 import { requireApiKey } from "../auth/apiKey";
-import { decryptUtf8 } from "../crypto/aesgcm";
+import {
+  CredentialError,
+  deleteGrantsForTarget,
+  storeRotatedCredential,
+  unlockCredential,
+} from "../credentials/store";
 import { db } from "../db/client";
 import { env } from "../env";
 import { OAuthTokenRefreshError } from "../oauth/flow";
-import { hasAlwaysAllowRule } from "../proxy/alwaysAllow";
+import { approvalUrl } from "../passkey/webauthn";
+import { findActiveApprovalWindow } from "../proxy/approvalWindows";
 import { interpretProxyRequest } from "../proxy/interpret";
 import type { ProxyProvider } from "../proxy/provider";
 import { getProxyProviderForUrl } from "../proxy/providerRegistry";
 import { readBodyWithLimit } from "../proxy/readLimit";
 import { createProxyRequest } from "../proxy/requests";
+import { decodeBodyForInterpret, truncate } from "../proxy/summary";
 import { validateUpstreamUrl } from "../proxy/url";
 import { telegramApi } from "../telegram/api";
 
@@ -124,56 +131,6 @@ function encodeRequestBodyBase64(params: {
     bodyBase64: Buffer.from(bytes).toString("base64"),
     contentType: ctRaw,
   };
-}
-
-function decodeBodyForInterpret(params: {
-  contentType: string | undefined;
-  bodyBase64: string | undefined;
-}): {
-  bodyText?: string;
-  bodyJson?: unknown;
-  bodySummary?: string;
-} {
-  if (!params.bodyBase64) return {};
-
-  const bytes = Buffer.from(params.bodyBase64, "base64");
-  const ctRaw = params.contentType;
-  const ct = ctRaw ? ctRaw.split(";", 1)[0]?.trim().toLowerCase() : "";
-
-  const isJson = ct === "application/json" || ct.endsWith("+json");
-  const isTextual =
-    ct.startsWith("text/") ||
-    ct === "application/x-www-form-urlencoded" ||
-    ct.endsWith("+xml") ||
-    ct === "application/xml";
-
-  if (isJson || isTextual) {
-    const text = new TextDecoder().decode(bytes);
-    if (isJson) {
-      try {
-        return {
-          bodyText: text,
-          bodyJson: JSON.parse(text),
-          bodySummary: text,
-        };
-      } catch {
-        return { bodyText: text, bodySummary: text };
-      }
-    }
-
-    return { bodyText: text, bodySummary: text };
-  }
-
-  const prefix = bytes.subarray(0, 24);
-  const b64Prefix = Buffer.from(prefix).toString("base64");
-  return {
-    bodySummary: `<binary ${bytes.byteLength} bytes; base64_prefix=${b64Prefix}…>`,
-  };
-}
-
-function truncate(s: string, max: number): string {
-  if (s.length <= max) return s;
-  return `${s.slice(0, max - 1)}…`;
 }
 
 function escapeHtml(s: string): string {
@@ -363,12 +320,13 @@ proxyRouter.post("/requests/:id/execute", requireApiKey, async (c) => {
   const database = await db();
   const row = (await database
     .query(
-      "SELECT id, user_id, api_key_id, status, approval_expires_at, upstream_url, method, request_headers_json, request_body_base64 FROM proxy_requests WHERE id = ? AND user_id = ? AND api_key_id = ?;"
+      "SELECT id, user_id, api_key_id, status, approval_expires_at, upstream_url, method, request_headers_json, request_body_base64, grant_id FROM proxy_requests WHERE id = ? AND user_id = ? AND api_key_id = ?;"
     )
     .get(requestId, auth.userId, auth.apiKeyId)) as {
     id: string;
     user_id: string;
     api_key_id: string;
+    grant_id: string | null;
     status: string;
     approval_expires_at: string;
     upstream_url: string;
@@ -482,11 +440,9 @@ proxyRouter.post("/requests/:id/execute", requireApiKey, async (c) => {
 
     const acct = (await database
       .query(
-        "SELECT refresh_token_ciphertext FROM linked_accounts WHERE user_id = ? AND provider = ? AND status = 'active' LIMIT 1;"
+        "SELECT id FROM linked_accounts WHERE user_id = ? AND provider = ? AND status = 'active' LIMIT 1;"
       )
-      .get(auth.userId, provider.id)) as {
-      refresh_token_ciphertext: Uint8Array;
-    } | null;
+      .get(auth.userId, provider.id)) as { id: string } | null;
 
     if (!acct) {
       await database
@@ -504,16 +460,40 @@ proxyRouter.post("/requests/:id/execute", requireApiKey, async (c) => {
       );
     }
 
-    if (!env.APP_SECRET) {
+    // The approval released a key for this credential (a grant). Decrypting
+    // also rotates the stored ciphertext; the request's own grant is wiped
+    // right away since execute is single-use.
+    let unlocked: Awaited<ReturnType<typeof unlockCredential>>;
+    try {
+      unlocked = await unlockCredential({
+        grantId: row.grant_id,
+        userId: auth.userId,
+      });
+    } catch (err) {
+      if (!(err instanceof CredentialError)) throw err;
       await database
         .query(
-          "UPDATE proxy_requests SET status = 'FAILED', updated_at = ?, error_code = 'APP_SECRET_NOT_CONFIGURED' WHERE id = ?;"
+          "UPDATE proxy_requests SET status = 'FAILED', updated_at = ?, error_code = ?, error_message = ? WHERE id = ?;"
         )
-        .run(new Date().toISOString(), row.id);
-      return c.json({ error: "server_misconfigured", request_id: row.id }, 500);
+        .run(
+          new Date().toISOString(),
+          `CREDENTIAL_${err.code}`,
+          err.message,
+          row.id
+        );
+      return c.json(
+        {
+          error: "credential_unavailable",
+          code: err.code,
+          message: err.message,
+          request_id: row.id,
+        },
+        409
+      );
+    } finally {
+      await deleteGrantsForTarget({ targetKind: "proxy", targetId: row.id });
     }
-
-    const storedCredential = await decryptUtf8(acct.refresh_token_ciphertext);
+    const storedCredential = unlocked.plaintext;
 
     const method = (row.method || "GET").toUpperCase();
     if (!provider.allowedMethods.has(method)) {
@@ -541,9 +521,18 @@ proxyRouter.post("/requests/:id/execute", requireApiKey, async (c) => {
 
     let authorization: string;
     try {
-      authorization = await provider.getAuthorizationHeaderValue({
+      const authResult = await provider.getAuthorizationHeaderValue({
         storedCredential,
       });
+      authorization = authResult.authorization;
+      if (authResult.updatedCredential) {
+        await storeRotatedCredential({
+          userId: row.user_id,
+          linkedAccountId: unlocked.linkedAccountId,
+          provider: unlocked.provider,
+          plaintext: authResult.updatedCredential,
+        });
+      }
     } catch (err) {
       const now = new Date().toISOString();
 
@@ -751,16 +740,16 @@ proxyRouter.post("/request", requireApiKey, async (c) => {
 
   const requesterIp = getRequesterIp(c);
 
-  const alwaysAllow =
+  const approvalWindow =
     requesterIp != null
-      ? await hasAlwaysAllowRule({
+      ? await findActiveApprovalWindow({
           userId: auth.userId,
           apiKeyId: auth.apiKeyId,
           requesterIp,
           method: methodNorm,
           url: validatedUrl,
         })
-      : false;
+      : null;
 
   const normalizedHeaders = normalizeHeaders(
     provider.extraAllowedRequestHeaders,
@@ -802,19 +791,25 @@ proxyRouter.post("/request", requireApiKey, async (c) => {
     bodyBase64,
     consentHint: consentHint ?? undefined,
     idempotencyKey: idempotencyKey ?? undefined,
-    approvalTtlMs: 2 * 60_000,
+    approvalTtlMs: 5 * 60_000,
   });
 
   let autoApproved = false;
 
-  // If a permanent allow rule exists for this endpoint, skip the Telegram round-trip.
-  // (We still create a proxy_request row for auditability and idempotency semantics.)
-  if (alwaysAllow && created.status === "PENDING_APPROVAL") {
+  // Inside an approval window for this endpoint, skip the approval round-trip
+  // and reuse the window's credential grant. (We still create a proxy_request
+  // row for auditability and idempotency semantics.)
+  if (approvalWindow && created.status === "PENDING_APPROVAL") {
     await database
       .query(
-        "UPDATE proxy_requests SET status = 'APPROVED', updated_at = ?, error_code = NULL, error_message = NULL WHERE id = ? AND user_id = ? AND status = 'PENDING_APPROVAL';"
+        "UPDATE proxy_requests SET status = 'APPROVED', grant_id = ?, updated_at = ?, error_code = NULL, error_message = NULL WHERE id = ? AND user_id = ? AND status = 'PENDING_APPROVAL';"
       )
-      .run(new Date().toISOString(), created.requestId, auth.userId);
+      .run(
+        approvalWindow.grantId,
+        new Date().toISOString(),
+        created.requestId,
+        auth.userId
+      );
 
     created = { ...created, status: "APPROVED" };
     autoApproved = true;
@@ -839,14 +834,14 @@ proxyRouter.post("/request", requireApiKey, async (c) => {
     .get(auth.userId)) as { telegram_user_id: number } | null;
 
   if (created.isNew && u?.telegram_user_id && env.TELEGRAM_BOT_TOKEN) {
-    // Inform the user that the request was auto-approved via an always-allow rule.
-    if (autoApproved) {
+    // Inform the user that the request was auto-approved via an approval window.
+    if (autoApproved && approvalWindow) {
       const url = new URL(created.canonicalUpstreamUrl);
       const text = [
         "<b>Permission request</b>",
         "",
         "Decision: <code>AUTO-APPROVED</code>",
-        "Reason: <code>Always allow</code> rule matched this endpoint",
+        `Reason: approval window for this endpoint (until <code>${escapeHtml(approvalWindow.expiresAt)}</code>)`,
         "",
         `<b>API key</b>: <code>${escapeHtml(auth.apiKeyLabel)}</code>`,
         `<b>Request</b>: <code>${escapeHtml(`${methodNorm} ${url.hostname}${url.pathname}`)}</code>`,
@@ -909,7 +904,7 @@ proxyRouter.post("/request", requireApiKey, async (c) => {
           : "",
         "",
         ...(requesterNote ? ["", requesterNote, ""] : []),
-        "Approve to allow the agent to execute this request.",
+        "Review and approve with your passkey (opens in Safari).",
         `Hash: <code>${escapeHtml(hashPrefix)}</code>`,
       ]
         .filter(Boolean)
@@ -919,12 +914,8 @@ proxyRouter.post("/request", requireApiKey, async (c) => {
         inline_keyboard: [
           [
             {
-              text: "Approve",
-              callback_data: `r:approve:${created.requestId}`,
-            },
-            {
-              text: "Always allow",
-              callback_data: `r:always_allow:${created.requestId}`,
+              text: "Review & approve",
+              url: await approvalUrl({ kind: "proxy", id: created.requestId }),
             },
             { text: "Deny", callback_data: `r:deny:${created.requestId}` },
           ],

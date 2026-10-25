@@ -9,7 +9,7 @@ function nowIso(): string {
 export async function auditEvent(params: {
   userId?: string;
   requestId?: string;
-  actorType: "api_key" | "telegram" | "system";
+  actorType: "api_key" | "telegram" | "system" | "passkey";
   actorId: string;
   eventType: string;
   event: unknown;

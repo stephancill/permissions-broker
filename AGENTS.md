@@ -1,6 +1,6 @@
 # Agent Contributing Guide
 
-This repo is a Bun + Hono service that gates external access behind Telegram approvals.
+This repo is a Bun + Hono service that gates external access behind Telegram-notified, passkey-confirmed approvals.
 It has two primary surfaces:
 
 1. Generic approval-gated HTTP proxy (`/v1/proxy/*`) for supported providers
@@ -26,7 +26,7 @@ Fill in at least:
 
 - `TELEGRAM_BOT_TOKEN`
 - `APP_BASE_URL` (publicly reachable for OAuth callback if testing OAuth locally)
-- `APP_SECRET` (encrypts tokens at rest)
+- `APP_SECRET` (encrypts short-lived approval keys, session secrets, and legacy credentials)
 - OAuth client credentials (Google/GitHub)
 
 3. Run the server:
@@ -74,6 +74,7 @@ Formatting/linting uses Biome.
   - `src/web/git.ts`: git session APIs + smart-HTTP proxy
   - `src/web/email.ts`: read-only email session APIs (generic IMAP)
   - `src/web/accounts.ts`: OAuth callback + list accounts
+  - `src/web/passkey.ts`, `src/web/approve.ts`: passkey enrollment and approval pages
 - `src/telegram/`: bot + polling
 - `src/oauth/`: generic OAuth flow + state handling
 - `src/email/`: read-only IMAP client, session persistence, curated ops
@@ -141,17 +142,33 @@ Push sessions enforce extra protections (no tags, no deletes, default branch gat
 
 ### Email read session lifecycle (`/v1/email`)
 
-- Create session: `POST /v1/email/sessions` (Telegram approval required)
+- Create session: `POST /v1/email/sessions` (passkey approval required)
 - Poll: `GET /v1/email/sessions/:id`
 - Read ops: `GET /sessions/:id/folders`, `POST /sessions/:id/search`, `POST /sessions/:id/read`
 - Sessions are short-lived, key-scoped, and **read-only by construction**:
   the IMAP client (`src/email/client.ts`) exposes only `list`/`search`/`fetch`/`fetchOne`
   and opens every mailbox with `EXAMINE`. Never add write methods there.
 
+### Passkey-gated credentials
+
+See `docs/PASSKEY_CREDENTIAL_ENCRYPTION.md`.
+
+- Linked credentials are ECIES-encrypted to the user's public key; only the user's
+  passkey (WebAuthn PRF) can unwrap the private key. The server can encrypt but
+  never decrypt on its own.
+- Approvals happen on `/approve/:kind/:id` (passkey assertion + DEK). Telegram
+  buttons can only deny.
+- Never read credentials with `decryptUtf8`; go through `src/credentials/store.ts`
+  (`saveLinkedCredential`, `createGrant`, `unlockCredential`). Unlock rotates the
+  ciphertext, so never cache decrypted credentials across requests.
+- `src/passkey/clientCrypto.ts` must stay byte-compatible with
+  `src/crypto/ecies.ts`; `tests/passkey_crypto.test.ts` checks this.
+- Key-material pages must not load third-party scripts (see `src/web/pages.ts` CSP).
+
 ## Security/Privacy Rules
 
-- Never log secrets (API keys, OAuth tokens, session secrets).
-- Tokens are encrypted at rest using `APP_SECRET`.
+- Never log secrets (API keys, OAuth tokens, session secrets, DEKs, PRF output).
+- Credentials are encrypted to the user's passkey-held key; `APP_SECRET` only protects short-lived grants and legacy rows.
 - Keep upstream allowlists strict (hosts + https).
 - Prefer narrow reads and small payloads; broker enforces size limits.
 

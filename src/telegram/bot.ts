@@ -4,20 +4,24 @@ import { ulid } from "ulid";
 
 import { auditEvent } from "../audit/audit";
 import { createConnectState } from "../connect/state";
+import { isEnrolled } from "../credentials/store";
 import { randomBase64Url } from "../crypto/random";
 import { sha256Hex } from "../crypto/sha256";
 import { db } from "../db/client";
-import { setEmailSessionStatus } from "../email/sessions";
 import { env } from "../env";
-import { setGitSessionStatus } from "../git/sessions";
 import { buildAuthorizationUrl } from "../oauth/flow";
 import type { OAuthProviderConfig } from "../oauth/provider";
 import { getProvider } from "../oauth/registry";
 import { createOauthState } from "../oauth/state";
-import { upsertAlwaysAllowRule } from "../proxy/alwaysAllow";
+import { appUrl } from "../passkey/webauthn";
 import type { ProxyProviderId } from "../proxy/provider";
 import { listProxyProviderIds } from "../proxy/providerRegistry";
 import { decideProxyRequest } from "../proxy/requests";
+import { PASSKEY_CONNECT_PROVIDER } from "../web/passkey";
+
+// Approvals need the passkey page; Telegram buttons can only deny.
+const PASSKEY_APPROVAL_HINT =
+  "Approve via the Review & approve link (passkey required)";
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -262,7 +266,34 @@ export function createBot(): Bot {
     if (!ctx.from) return;
     await ensureUser(ctx.from.id);
     await ctx.reply(
-      "Permissions Broker is running. Use /connect to link a provider and /key to create an API key."
+      "Permissions Broker is running. Use /passkey to set up the passkey that encrypts your credentials, /connect to link a provider and /key to create an API key."
+    );
+  });
+
+  bot.command("passkey", async (ctx) => {
+    if (!ctx.from) return;
+    const userId = await ensureUser(ctx.from.id);
+    if (!env.APP_BASE_URL || !env.APP_SECRET) {
+      await ctx.reply("APP_BASE_URL and APP_SECRET must be configured.");
+      return;
+    }
+
+    const { state } = await createConnectState({
+      userId,
+      provider: PASSKEY_CONNECT_PROVIDER,
+      ttlMs: 10 * 60_000,
+    });
+    const url = appUrl(`/passkey/enroll?state=${encodeURIComponent(state)}`);
+    const enrolled = await isEnrolled(userId);
+    const kb = new InlineKeyboard().url(
+      enrolled ? "Replace passkey" : "Set up passkey",
+      url
+    );
+    await ctx.reply(
+      enrolled
+        ? "A passkey is already set up. Open the link in Safari to replace it (valid for 10 minutes)."
+        : "Your connected accounts will be encrypted with a key only your passkey can unlock. Open the link in Safari (valid for 10 minutes).",
+      { reply_markup: kb }
     );
   });
 
@@ -394,6 +425,12 @@ export function createBot(): Bot {
     if (!env.APP_SECRET) {
       throw new Error(
         "APP_SECRET is not configured; cannot store refresh tokens."
+      );
+    }
+
+    if (!(await isEnrolled(params.userId))) {
+      throw new Error(
+        "Set up a passkey first with /passkey; connected accounts are encrypted to it."
       );
     }
 
@@ -776,7 +813,6 @@ export function createBot(): Bot {
     const action = ctx.match?.[1];
     const requestId = ctx.match?.[2];
     const userId = await ensureUser(ctx.from.id);
-    const database = await db();
 
     const msg = ctx.callbackQuery.message;
     if (!msg || !("message_id" in msg)) {
@@ -784,59 +820,13 @@ export function createBot(): Bot {
       return;
     }
 
-    let alwaysAllowEnabled = false;
-
-    if (action === "always_allow") {
-      const row = (await database
-        .query(
-          "SELECT upstream_url, method, api_key_id, requester_ip FROM proxy_requests WHERE id = ? AND user_id = ? LIMIT 1;"
-        )
-        .get(requestId, userId)) as {
-        upstream_url: string;
-        method: string;
-        api_key_id: string;
-        requester_ip: string | null;
-      } | null;
-
-      if (!row) {
-        await answerCallbackQuerySafe(ctx, { text: "Request not found" });
-        return;
-      }
-
-      if (!row.requester_ip) {
-        await answerCallbackQuerySafe(ctx, {
-          text: "missing requester IP (cannot scope always-allow)",
-        });
-        return;
-      }
-
-      const { ruleId } = await upsertAlwaysAllowRule({
-        userId,
-        apiKeyId: row.api_key_id,
-        requesterIp: row.requester_ip,
-        method: row.method,
-        url: new URL(row.upstream_url),
-      });
-
-      await auditEvent({
-        userId,
-        requestId,
-        actorType: "telegram",
-        actorId: String(ctx.from.id),
-        eventType: "proxy_always_allow_created",
-        event: {
-          rule_id: ruleId,
-          api_key_id: row.api_key_id,
-          requester_ip: row.requester_ip,
-          method: row.method,
-          upstream_url: row.upstream_url,
-        },
-      });
-
-      alwaysAllowEnabled = true;
+    // Buttons from messages sent before passkey approvals.
+    if (action !== "deny") {
+      await answerCallbackQuerySafe(ctx, { text: PASSKEY_APPROVAL_HINT });
+      return;
     }
 
-    const decision = action === "deny" ? "denied" : "approved";
+    const decision = "denied";
     const telegramChatId = "chat" in msg ? msg.chat.id : ctx.from.id;
     const res = await decideProxyRequest({
       requestId,
@@ -873,28 +863,19 @@ export function createBot(): Bot {
       requestId,
       actorType: "telegram",
       actorId: String(ctx.from.id),
-      eventType:
-        decision === "approved"
-          ? "proxy_request_approved"
-          : "proxy_request_denied",
+      eventType: "proxy_request_denied",
       event: {},
     });
 
-    await answerCallbackQuerySafe(ctx, {
-      text: alwaysAllowEnabled ? "approved (always allow)" : decision,
-    });
+    await answerCallbackQuerySafe(ctx, { text: decision });
 
     // Update the approval message to reflect the decision and remove buttons.
     try {
       if ("text" in msg && typeof msg.text === "string") {
-        const base = renderApprovalDecisionText({
-          originalText: msg.text,
-          decision,
-        });
-        const note = alwaysAllowEnabled
-          ? `\n\nAlways allow: ENABLED for this endpoint (<code>${escapeHtml(nowIso())}</code>)`
-          : "";
-        await ctx.editMessageText(`${base}${note}`, { parse_mode: "HTML" });
+        await ctx.editMessageText(
+          renderApprovalDecisionText({ originalText: msg.text, decision }),
+          { parse_mode: "HTML" }
+        );
       }
       await ctx.editMessageReplyMarkup({ reply_markup: new InlineKeyboard() });
     } catch {
@@ -909,14 +890,6 @@ export function createBot(): Bot {
       const action = ctx.match?.[1];
       const sessionId = ctx.match?.[2];
       const userId = await ensureUser(ctx.from.id);
-      const database = await db();
-
-      const sess = (await database
-        .query(
-          "SELECT operation FROM git_sessions WHERE id = ? AND user_id = ? LIMIT 1;"
-        )
-        .get(sessionId, userId)) as { operation: string } | null;
-      const operation = sess?.operation ?? "clone";
 
       const msg = ctx.callbackQuery.message;
       if (!msg || !("message_id" in msg)) {
@@ -924,72 +897,35 @@ export function createBot(): Bot {
         return;
       }
 
+      if (action !== "deny") {
+        await answerCallbackQuerySafe(ctx, { text: PASSKEY_APPROVAL_HINT });
+        return;
+      }
+
       try {
-        if (action === "deny") {
-          await setGitSessionStatus({ sessionId, userId, status: "DENIED" });
-          await auditEvent({
-            userId,
-            actorType: "telegram",
-            actorId: String(ctx.from.id),
-            eventType: "git_session_denied",
-            event: { sessionId },
-          });
-          await answerCallbackQuerySafe(ctx, { text: "denied" });
-        } else if (action === "approve_clone") {
-          await setGitSessionStatus({ sessionId, userId, status: "APPROVED" });
-          await auditEvent({
-            userId,
-            actorType: "telegram",
-            actorId: String(ctx.from.id),
-            eventType: "git_session_approved",
-            event: { sessionId, operation },
-          });
-          await answerCallbackQuerySafe(ctx, { text: "approved" });
-        } else if (action === "approve_push_block") {
-          await setGitSessionStatus({
-            sessionId,
-            userId,
-            status: "APPROVED",
-            allowDefaultBranchPush: false,
-          });
-          await auditEvent({
-            userId,
-            actorType: "telegram",
-            actorId: String(ctx.from.id),
-            eventType: "git_session_approved",
-            event: {
-              sessionId,
-              operation,
-              allowDefaultBranchPush: false,
-            },
-          });
-          await answerCallbackQuerySafe(ctx, { text: "approved" });
-        } else if (action === "approve_push_allow") {
-          await setGitSessionStatus({
-            sessionId,
-            userId,
-            status: "APPROVED",
-            allowDefaultBranchPush: true,
-          });
-          await auditEvent({
-            userId,
-            actorType: "telegram",
-            actorId: String(ctx.from.id),
-            eventType: "git_session_approved",
-            event: {
-              sessionId,
-              operation,
-              allowDefaultBranchPush: true,
-            },
-          });
-          await answerCallbackQuerySafe(ctx, { text: "approved" });
+        const database = await db();
+        const res = await database
+          .query(
+            "UPDATE git_sessions SET status = 'DENIED', updated_at = ? WHERE id = ? AND user_id = ? AND status = 'PENDING_APPROVAL';"
+          )
+          .run(nowIso(), sessionId, userId);
+        if (res.changes !== 1) {
+          await answerCallbackQuerySafe(ctx, { text: "not_pending" });
+          return;
         }
+        await auditEvent({
+          userId,
+          actorType: "telegram",
+          actorId: String(ctx.from.id),
+          eventType: "git_session_denied",
+          event: { sessionId },
+        });
+        await answerCallbackQuerySafe(ctx, { text: "denied" });
 
         try {
           if ("text" in msg && typeof msg.text === "string") {
-            const decision = action === "deny" ? "DENIED" : "APPROVED";
             await ctx.editMessageText(
-              `${escapeHtml(msg.text)}\n\n<b>Decision</b>: <code>${escapeHtml(decision)}</code> (<code>${escapeHtml(nowIso())}</code>)`,
+              `${escapeHtml(msg.text)}\n\n<b>Decision</b>: <code>DENIED</code> (<code>${escapeHtml(nowIso())}</code>)`,
               { parse_mode: "HTML" }
             );
           }
@@ -1018,34 +954,35 @@ export function createBot(): Bot {
       return;
     }
 
+    if (action !== "deny") {
+      await answerCallbackQuerySafe(ctx, { text: PASSKEY_APPROVAL_HINT });
+      return;
+    }
+
     try {
-      if (action === "deny") {
-        await setEmailSessionStatus({ sessionId, userId, status: "DENIED" });
-        await auditEvent({
-          userId,
-          actorType: "telegram",
-          actorId: String(ctx.from.id),
-          eventType: "email_session_denied",
-          event: { sessionId },
-        });
-        await answerCallbackQuerySafe(ctx, { text: "denied" });
-      } else {
-        await setEmailSessionStatus({ sessionId, userId, status: "APPROVED" });
-        await auditEvent({
-          userId,
-          actorType: "telegram",
-          actorId: String(ctx.from.id),
-          eventType: "email_session_approved",
-          event: { sessionId },
-        });
-        await answerCallbackQuerySafe(ctx, { text: "approved" });
+      const database = await db();
+      const res = await database
+        .query(
+          "UPDATE email_sessions SET status = 'DENIED', updated_at = ? WHERE id = ? AND user_id = ? AND status = 'PENDING_APPROVAL';"
+        )
+        .run(nowIso(), sessionId, userId);
+      if (res.changes !== 1) {
+        await answerCallbackQuerySafe(ctx, { text: "not_pending" });
+        return;
       }
+      await auditEvent({
+        userId,
+        actorType: "telegram",
+        actorId: String(ctx.from.id),
+        eventType: "email_session_denied",
+        event: { sessionId },
+      });
+      await answerCallbackQuerySafe(ctx, { text: "denied" });
 
       try {
         if ("text" in msg && typeof msg.text === "string") {
-          const decision = action === "deny" ? "DENIED" : "APPROVED";
           await ctx.editMessageText(
-            `${escapeHtml(msg.text)}\n\n<b>Decision</b>: <code>${escapeHtml(decision)}</code> (<code>${escapeHtml(nowIso())}</code>)`,
+            `${escapeHtml(msg.text)}\n\n<b>Decision</b>: <code>DENIED</code> (<code>${escapeHtml(nowIso())}</code>)`,
             { parse_mode: "HTML" }
           );
         }

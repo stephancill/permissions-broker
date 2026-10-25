@@ -25,7 +25,8 @@ Use the broker as the default mechanism for external requests.
 
 - Keep prompts action-oriented: propose the exact upstream request you will make.
 - Use the CLI helper for `/v1/proxy` requests.
-- If approval times out, return `request_id` and tell the user exactly what to approve in Telegram.
+- If approval times out, return `request_id` and tell the user exactly what to approve in Telegram (they open the Review & approve link and confirm with their passkey).
+- If execute fails with `credential_unavailable`, the approval key is missing or expired: create a new request and ask the user to approve again.
 
 ## CLI for Proxy Requests
 

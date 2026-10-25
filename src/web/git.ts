@@ -3,6 +3,13 @@ import { z } from "zod";
 
 import { auditEvent } from "../audit/audit";
 import { requireApiKey } from "../auth/apiKey";
+import {
+  CredentialError,
+  deleteGrantsForTarget,
+  findGrantId,
+  getActiveLinkedAccount,
+  unlockCredential,
+} from "../credentials/store";
 import { decryptUtf8 } from "../crypto/aesgcm";
 import { db } from "../db/client";
 import { env } from "../env";
@@ -25,6 +32,7 @@ import {
   streamFromPrefixAndReader,
   withByteLimit,
 } from "../git/stream";
+import { approvalUrl } from "../passkey/webauthn";
 import { telegramApi } from "../telegram/api";
 
 const CreateSessionSchema = z.object({
@@ -128,15 +136,25 @@ function serviceFromQuery(query: string): string | null {
   return u.searchParams.get("service");
 }
 
-async function getGitHubToken(userId: string): Promise<string | null> {
-  const database = await db();
-  const row = (await database
-    .query(
-      "SELECT refresh_token_ciphertext FROM linked_accounts WHERE user_id = ? AND provider = 'github' AND status = 'active' LIMIT 1;"
-    )
-    .get(userId)) as { refresh_token_ciphertext: Uint8Array } | null;
-  if (!row) return null;
-  return decryptUtf8(row.refresh_token_ciphertext);
+// The session's approval released a key for the linked GitHub credential.
+// Without a linked account the session proxies unauthenticated (public repos).
+async function getGitHubToken(params: {
+  userId: string;
+  sessionId: string;
+}): Promise<string | null> {
+  const account = await getActiveLinkedAccount({
+    userId: params.userId,
+    provider: "github",
+  });
+  if (!account) return null;
+  const unlocked = await unlockCredential({
+    grantId: await findGrantId({
+      targetKind: "git",
+      targetId: params.sessionId,
+    }),
+    userId: params.userId,
+  });
+  return unlocked.plaintext;
 }
 
 export const gitRouter = new Hono();
@@ -175,7 +193,7 @@ gitRouter.post("/sessions", requireApiKey, async (c) => {
     operation: parsed.data.operation,
     repoOwner: owner,
     repoName: name,
-    approvalTtlMs: 2 * 60_000,
+    approvalTtlMs: 5 * 60_000,
   });
 
   await auditEvent({
@@ -214,7 +232,7 @@ gitRouter.post("/sessions", requireApiKey, async (c) => {
     } else {
       lines.push("<b>Operation</b>: <code>PUSH</code> (write)");
       lines.push(
-        "<i>Safety:</i> <code>Allow</code> blocks pushing to the repo default branch. Use <code>Allow (main branch)</code> to allow it."
+        "<i>Safety:</i> default-branch pushes are blocked unless you allow them on the approval page."
       );
     }
 
@@ -226,36 +244,19 @@ gitRouter.post("/sessions", requireApiKey, async (c) => {
       lines.push("");
     }
 
-    lines.push("Approve to allow the agent to use this git session.");
+    lines.push("Review and approve with your passkey (opens in Safari).");
 
-    const kb =
-      parsed.data.operation === "push"
-        ? {
-            inline_keyboard: [
-              [
-                {
-                  text: "Allow",
-                  callback_data: `gs:approve_push_block:${created.sessionId}`,
-                },
-                {
-                  text: "Allow (main branch)",
-                  callback_data: `gs:approve_push_allow:${created.sessionId}`,
-                },
-              ],
-              [{ text: "Deny", callback_data: `gs:deny:${created.sessionId}` }],
-            ],
-          }
-        : {
-            inline_keyboard: [
-              [
-                {
-                  text: `Approve ${parsed.data.operation}`,
-                  callback_data: `gs:approve_clone:${created.sessionId}`,
-                },
-                { text: "Deny", callback_data: `gs:deny:${created.sessionId}` },
-              ],
-            ],
-          };
+    const kb = {
+      inline_keyboard: [
+        [
+          {
+            text: "Review & approve",
+            url: await approvalUrl({ kind: "git", id: created.sessionId }),
+          },
+          { text: "Deny", callback_data: `gs:deny:${created.sessionId}` },
+        ],
+      ],
+    };
 
     await telegramApi()
       .sendMessage(u.telegram_user_id, lines.join("\n"), {
@@ -423,7 +424,15 @@ gitRouter.all("/session/:id/:secret/github/:owner/:repo/*", async (c) => {
 
   await touchGitSessionActivity(sess.id);
 
-  const token = await getGitHubToken(sess.user_id);
+  let token: string | null;
+  try {
+    token = await getGitHubToken({ userId: sess.user_id, sessionId: sess.id });
+  } catch (err) {
+    if (err instanceof CredentialError) {
+      return c.text(`credential unavailable: ${err.code}`, 409);
+    }
+    throw err;
+  }
   if (!token && sess.operation === "push") {
     return c.text("no github token", 409);
   }
@@ -557,6 +566,7 @@ gitRouter.all("/session/:id/:secret/github/:owner/:repo/*", async (c) => {
   // network/edge failures before the request reaches GitHub.
   if (path === "/git-receive-pack" && res.ok) {
     await markGitSessionUsed(sess.id);
+    await deleteGrantsForTarget({ targetKind: "git", targetId: sess.id });
   }
 
   if (path === "/info/refs" && sess.operation === "push") {

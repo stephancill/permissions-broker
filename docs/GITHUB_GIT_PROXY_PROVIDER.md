@@ -146,9 +146,9 @@ Default branch warning/block:
 
 - Determine default branch ref by parsing the `symref=HEAD:refs/heads/<name>` capability from the receive-pack handshake advertisement.
 - By default, reject push commands that update the default branch ref.
-- Telegram push approval provides two approve buttons:
-  - Approve push (block default branch)
-  - Approve push (allow default branch)
+- The passkey approval page offers two push options (Telegram only links to it):
+  - Allow push (block default branch)
+  - Allow push including the default branch
 
 ## Telegram prompts
 

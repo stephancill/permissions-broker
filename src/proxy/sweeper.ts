@@ -1,3 +1,4 @@
+import { sweepCredentialGrants } from "../credentials/store";
 import { db } from "../db/client";
 import { sweepEmailSessions } from "../email/sweeper";
 import { sweepGitSessions } from "../git/sweeper";
@@ -21,6 +22,8 @@ export async function sweepExpiredState(): Promise<void> {
   await sweepApprovalExpirations();
   await sweepGitSessions();
   await sweepEmailSessions();
+  // After session sweeps so keys of just-expired targets are wiped too.
+  await sweepCredentialGrants();
 }
 
 export async function startSweeperLoop(): Promise<void> {

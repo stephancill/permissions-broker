@@ -131,35 +131,6 @@ export async function validateGitSessionSecret(params: {
   return row;
 }
 
-export async function setGitSessionStatus(params: {
-  sessionId: string;
-  userId: string;
-  status: string;
-  allowDefaultBranchPush?: boolean;
-}): Promise<void> {
-  const now = nowIso();
-  const database = await db();
-  if (typeof params.allowDefaultBranchPush === "boolean") {
-    await database
-      .query(
-        "UPDATE git_sessions SET status = ?, allow_default_branch_push = ?, updated_at = ? WHERE id = ? AND user_id = ?;"
-      )
-      .run(
-        params.status,
-        params.allowDefaultBranchPush ? 1 : 0,
-        now,
-        params.sessionId,
-        params.userId
-      );
-  } else {
-    await database
-      .query(
-        "UPDATE git_sessions SET status = ?, updated_at = ? WHERE id = ? AND user_id = ?;"
-      )
-      .run(params.status, now, params.sessionId, params.userId);
-  }
-}
-
 export async function touchGitSessionActivity(
   sessionId: string
 ): Promise<void> {

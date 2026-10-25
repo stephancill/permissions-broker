@@ -3,8 +3,9 @@
 Telegram-controlled permissions gate + proxy API for third-party providers.
 
 - Agent/app calls a single proxy API using a user-issued API key.
-- Every request pauses and prompts the user in Telegram to Approve/Deny.
+- Every request pauses and prompts the user in Telegram; approving opens a page where the user confirms with their passkey (Face ID / Touch ID).
 - On approval, the agent can execute the upstream API request and the broker returns the upstream response.
+- Linked credentials are encrypted to a key only the user's passkey can unlock; the server cannot decrypt them without an approval. See `docs/PASSKEY_CREDENTIAL_ENCRYPTION.md`.
 
 ## Current providers:
 
@@ -32,7 +33,7 @@ When self-hosting, update the skill definition to point to your own broker insta
 
 3. Configure environment:
    - TELEGRAM_BOT_TOKEN: Your bot token from step 2
-   - APP_BASE_URL: Publicly reachable URL (e.g. https://your-host.com)
+   - APP_BASE_URL: Publicly reachable https URL (e.g. https://your-host.com). It is also the passkey (WebAuthn) relying party: changing the domain invalidates enrolled passkeys.
    - APP_SECRET: Generate a random secret (openssl rand -base64 32)
    - Provider OAuth credentials (optional, for providers you want to support):
      - Google: Google Cloud Console -> OAuth 2.0
@@ -59,7 +60,7 @@ Migration runbook: `docs/RAILWAY_TO_CLOUDFLARE_WORKERS.md`
 
 Key points:
 
-- Preserve `APP_SECRET` exactly when importing existing data; encrypted linked-account credentials depend on it.
+- Preserve `APP_SECRET` exactly when importing existing data; legacy linked-account credentials (not yet migrated by a passkey enrollment) depend on it.
 - Import the Railway SQLite database into D1 before cutover.
 - Keep `APP_BASE_URL` on the same production domain when possible.
 - Register Telegram webhook at `$APP_BASE_URL/telegram/webhook` after Worker deploy.
@@ -75,7 +76,7 @@ Key points:
 - Copy `.env.example` to `.env.local` and fill in:
   - `TELEGRAM_BOT_TOKEN`
   - `APP_BASE_URL` (must be reachable by Google OAuth; use ngrok/cloudflared for local dev)
-  - `APP_SECRET` (random secret used to encrypt refresh tokens)
+  - `APP_SECRET` (random secret used to encrypt short-lived approval keys and session secrets, and legacy credentials until users enroll a passkey)
   - `GOOGLE_OAUTH_CLIENT_ID` + `GOOGLE_OAUTH_CLIENT_SECRET`
   - `GITHUB_OAUTH_CLIENT_ID` + `GITHUB_OAUTH_CLIENT_SECRET`
   - `SPOTIFY_OAUTH_CLIENT_ID` + `SPOTIFY_OAUTH_CLIENT_SECRET`
@@ -97,6 +98,7 @@ Health check
 In Telegram (to your bot):
 
 - `/start`
+- `/passkey` (set up or replace the passkey that encrypts your linked accounts; open the link in Safari, not Telegram's in-app browser)
 - `/key <label>` (or `/key` to be prompted for a label)
 - `/connect` (shows connection status + buttons)
 - `/connect google` (generates Google OAuth link)
@@ -106,6 +108,8 @@ In Telegram (to your bot):
 - `/connect imap` (opens an email connect form; IMAP server is auto-detected; read-only, session-gated)
 - `/keys` (rename/revoke/rotate keys)
 
+Approvals: request messages have a **Review & approve** link (passkey approval page) and a **Deny** button. Proxy requests can be approved once or for 15/60 minutes per endpoint (an approval window, scoped to API key + requester IP + method + host + path).
+
 ## Public API
 
 Auth:
@@ -114,10 +118,10 @@ Auth:
 
 Endpoints:
 
-- `POST /v1/proxy/request` (create a request; always prompts in Telegram)
+- `POST /v1/proxy/request` (create a request; prompts in Telegram unless an approval window covers it)
 - `GET /v1/proxy/requests/:id` (poll status only)
 - `POST /v1/proxy/requests/:id/execute` (execute approved request and return upstream response)
-- `POST /v1/email/sessions` (create a read-only email session; Telegram approval required)
+- `POST /v1/email/sessions` (create a read-only email session; passkey approval required)
 - `GET /v1/email/sessions/:id` (poll session status)
 - `GET /v1/email/sessions/:id/folders` (list mailboxes)
 - `POST /v1/email/sessions/:id/search` (search messages; curated filters)
