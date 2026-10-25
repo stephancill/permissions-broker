@@ -103,6 +103,12 @@ export const githubProxyProvider: ProxyProvider = {
     if (!params.headers["x-github-api-version"]) {
       params.headers["x-github-api-version"] = "2022-11-28";
     }
+
+    // GitHub rejects API requests without a User-Agent (403), and Workers'
+    // fetch does not add one.
+    if (!params.headers["user-agent"]) {
+      params.headers["user-agent"] = "permissions-broker";
+    }
   },
 
   interpretRequest(input: ProxyInterpretInput): InterpretedRequest | null {
