@@ -124,7 +124,8 @@ export async function refreshAccessToken(params: {
   }
 
   try {
-    return oauth.processRefreshTokenResponse(as, client, response);
+    // Await so response errors reach the catch below and keep their detail.
+    return await oauth.processRefreshTokenResponse(as, client, response);
   } catch (err) {
     if (err instanceof oauth.ResponseBodyError) {
       throw new OAuthTokenRefreshError({
