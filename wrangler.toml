@@ -2,7 +2,8 @@ name = "permissions-broker"
 main = "src/worker.ts"
 compatibility_date = "2026-07-18"
 compatibility_flags = ["nodejs_compat"]
-workers_dev = true
+# Disable the public *.workers.dev subdomain; serve only on the custom route.
+workers_dev = false
 routes = [
   { pattern = "permissions-broker.stupidtech.net/*", zone_name = "stupidtech.net" }
 ]

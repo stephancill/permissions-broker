@@ -343,13 +343,17 @@ gitRouter.get("/sessions/:id/remote", requireApiKey, async (c) => {
 // Git CLI proxy endpoints
 gitRouter.all("/session/:id/:secret/github/:owner/:repo/*", async (c) => {
   const requestId = crypto.randomUUID().slice(0, 8);
-  console.error(`[git-proxy:${requestId}] start ${c.req.method} ${c.req.url}`);
-
   const sessionId = c.req.param("id");
   const secret = c.req.param("secret");
   const owner = c.req.param("owner");
   const repoRaw = c.req.param("repo");
   const repo = repoRaw.endsWith(".git") ? repoRaw.slice(0, -4) : repoRaw;
+
+  // Never log the request URL: it embeds the session `:secret`, which is the
+  // bearer credential for this clone/push. Log only non-sensitive identifiers.
+  console.error(
+    `[git-proxy:${requestId}] start ${c.req.method} owner=${owner} repo=${repo}`
+  );
 
   // Derive the sub-path (e.g. /info/refs) from the full pathname.
   // This is more robust than relying on Hono's splat param behavior.
