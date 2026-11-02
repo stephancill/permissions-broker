@@ -135,7 +135,10 @@ decrypts credentials.
 1. Telegram messages carry a **Review & approve** URL button and a **Deny** callback
    button. Telegram buttons can no longer approve (old messages' Approve buttons
    answer with a hint). Git push default-branch permission and approval windows
-   are chosen on the page.
+   are chosen on the page. The sent message's chat id, message id and HTML are
+   stored on the request/session row (migration `0013`) so the prompt can be
+   edited with the decision and its buttons removed when it is approved on the
+   page, denied in Telegram, or expires (`src/telegram/approvalMessages.ts`).
 2. `t` is `HMAC(APP_SECRET, "approve:<kind>:<id>")`; the page embeds the wrapped
    private key, so it is only reachable from the Telegram link.
 3. In Telegram's in-app browser (`window.TelegramWebviewProxy`) the page shows

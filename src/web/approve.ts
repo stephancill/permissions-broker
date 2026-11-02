@@ -32,6 +32,7 @@ import {
 } from "../proxy/approvalWindows";
 import { getProxyProviderForUrl } from "../proxy/providerRegistry";
 import { summarizeStoredProxyRequest, truncate } from "../proxy/summary";
+import { markApprovalMessage } from "../telegram/approvalMessages";
 import {
   escapeHtml,
   scriptJson,
@@ -292,11 +293,18 @@ async function markExpired(target: ApprovalTarget): Promise<void> {
         : "email_sessions";
   const extra =
     target.kind === "proxy" ? ", error_code = 'APPROVAL_EXPIRED'" : "";
-  await database
+  const res = await database
     .query(
       `UPDATE ${table} SET status = 'EXPIRED', updated_at = ?${extra} WHERE id = ? AND status = 'PENDING_APPROVAL';`
     )
     .run(nowIso(), target.id);
+  if (res.changes === 1) {
+    await markApprovalMessage({
+      kind: target.kind,
+      id: target.id,
+      decision: "EXPIRED",
+    });
+  }
 }
 
 async function resolveTarget(
@@ -766,6 +774,22 @@ approveRouter.post("/:kind/:id", async (c) => {
       // Signed approval: verifiable later against the stored passkey public key.
       assertion: assertion.response,
     },
+  });
+
+  const windowNote = windowExpiresAt
+    ? proxyWindow?.scope === "provider"
+      ? `Auto-approving all ${target.credentialProvider} requests from this API key until ${windowExpiresAt}.`
+      : `Auto-approving matching requests until ${windowExpiresAt}.`
+    : undefined;
+  const defaultBranchNote =
+    "allow_default_branch_push" in options && options.allow_default_branch_push
+      ? "Default-branch pushes allowed."
+      : undefined;
+  await markApprovalMessage({
+    kind: target.kind,
+    id: target.id,
+    decision: "APPROVED",
+    note: windowNote ?? defaultBranchNote,
   });
 
   const message = windowExpiresAt

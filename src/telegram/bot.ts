@@ -18,6 +18,7 @@ import type { ProxyProviderId } from "../proxy/provider";
 import { listProxyProviderIds } from "../proxy/providerRegistry";
 import { decideProxyRequest } from "../proxy/requests";
 import { PASSKEY_CONNECT_PROVIDER } from "../web/passkey";
+import { markApprovalMessage } from "./approvalMessages";
 
 // Approvals need the passkey page; Telegram buttons can only deny.
 const PASSKEY_APPROVAL_HINT =
@@ -198,23 +199,6 @@ async function renderKeysMessage(userId: string): Promise<{
     text: `API keys:\n${lines.join("\n")}`,
     keyboard: kb,
   };
-}
-
-function renderApprovalDecisionText(params: {
-  originalText: string;
-  decision: "approved" | "denied";
-}): string {
-  const label = params.decision === "approved" ? "APPROVED" : "DENIED";
-
-  // The original message may contain characters that should be escaped when
-  // using parse_mode=HTML.
-  const original = escapeHtml(params.originalText);
-  return `${original}\n\n<b>Decision</b>: <code>${label}</code> (<code>${escapeHtml(nowIso())}</code>)`;
-}
-
-function renderExpiredDecisionText(originalText: string): string {
-  const original = escapeHtml(originalText);
-  return `${original}\n\n<b>Decision</b>: <code>EXPIRED</code> (<code>${escapeHtml(nowIso())}</code>)`;
 }
 
 function escapeHtml(s: string): string {
@@ -840,20 +824,12 @@ export function createBot(): Bot {
     if (!res.ok) {
       await answerCallbackQuerySafe(ctx, { text: res.reason });
 
-      // Best-effort message update for common cases.
       if (res.reason === "expired") {
-        try {
-          if ("text" in msg && typeof msg.text === "string") {
-            await ctx.editMessageText(renderExpiredDecisionText(msg.text), {
-              parse_mode: "HTML",
-            });
-          }
-          await ctx.editMessageReplyMarkup({
-            reply_markup: new InlineKeyboard(),
-          });
-        } catch {
-          // ignore
-        }
+        await markApprovalMessage({
+          kind: "proxy",
+          id: requestId,
+          decision: "EXPIRED",
+        });
       }
       return;
     }
@@ -869,18 +845,11 @@ export function createBot(): Bot {
 
     await answerCallbackQuerySafe(ctx, { text: decision });
 
-    // Update the approval message to reflect the decision and remove buttons.
-    try {
-      if ("text" in msg && typeof msg.text === "string") {
-        await ctx.editMessageText(
-          renderApprovalDecisionText({ originalText: msg.text, decision }),
-          { parse_mode: "HTML" }
-        );
-      }
-      await ctx.editMessageReplyMarkup({ reply_markup: new InlineKeyboard() });
-    } catch {
-      // ignore
-    }
+    await markApprovalMessage({
+      kind: "proxy",
+      id: requestId,
+      decision: "DENIED",
+    });
   });
 
   bot.callbackQuery(
@@ -922,19 +891,11 @@ export function createBot(): Bot {
         });
         await answerCallbackQuerySafe(ctx, { text: "denied" });
 
-        try {
-          if ("text" in msg && typeof msg.text === "string") {
-            await ctx.editMessageText(
-              `${escapeHtml(msg.text)}\n\n<b>Decision</b>: <code>DENIED</code> (<code>${escapeHtml(nowIso())}</code>)`,
-              { parse_mode: "HTML" }
-            );
-          }
-          await ctx.editMessageReplyMarkup({
-            reply_markup: new InlineKeyboard(),
-          });
-        } catch {
-          // ignore
-        }
+        await markApprovalMessage({
+          kind: "git",
+          id: sessionId,
+          decision: "DENIED",
+        });
       } catch (err) {
         const em = err instanceof Error ? err.message : String(err);
         await answerCallbackQuerySafe(ctx, { text: em });
@@ -979,19 +940,11 @@ export function createBot(): Bot {
       });
       await answerCallbackQuerySafe(ctx, { text: "denied" });
 
-      try {
-        if ("text" in msg && typeof msg.text === "string") {
-          await ctx.editMessageText(
-            `${escapeHtml(msg.text)}\n\n<b>Decision</b>: <code>DENIED</code> (<code>${escapeHtml(nowIso())}</code>)`,
-            { parse_mode: "HTML" }
-          );
-        }
-        await ctx.editMessageReplyMarkup({
-          reply_markup: new InlineKeyboard(),
-        });
-      } catch {
-        // ignore
-      }
+      await markApprovalMessage({
+        kind: "email",
+        id: sessionId,
+        decision: "DENIED",
+      });
     } catch (err) {
       const em = err instanceof Error ? err.message : String(err);
       await answerCallbackQuerySafe(ctx, { text: em });

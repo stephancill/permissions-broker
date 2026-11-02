@@ -22,7 +22,10 @@ import {
 } from "../email/sessions";
 import { env } from "../env";
 import { approvalUrl } from "../passkey/webauthn";
-import { telegramApi } from "../telegram/api";
+import {
+  markApprovalMessage,
+  sendApprovalMessage,
+} from "../telegram/approvalMessages";
 
 const SESSION_TTL_MS = 10 * 60_000;
 const DEFAULT_RESULTS_LIMIT = 50;
@@ -108,6 +111,11 @@ async function loadAuthorizedSession(
         sessionId,
         userId: auth.userId,
         status: "EXPIRED",
+      });
+      await markApprovalMessage({
+        kind: "email",
+        id: sessionId,
+        decision: "EXPIRED",
       });
       return {
         ok: false,
@@ -288,12 +296,13 @@ emailRouter.post("/sessions", requireApiKey, async (c) => {
       ],
     };
 
-    await telegramApi()
-      .sendMessage(u.telegram_user_id, lines.join("\n"), {
-        reply_markup: kb,
-        parse_mode: "HTML",
-      })
-      .catch(() => {});
+    await sendApprovalMessage({
+      kind: "email",
+      id: created.sessionId,
+      chatId: u.telegram_user_id,
+      html: lines.join("\n"),
+      replyMarkup: kb,
+    });
   }
 
   return c.json({
@@ -322,6 +331,11 @@ emailRouter.get("/sessions/:id", requireApiKey, async (c) => {
         sessionId,
         userId: auth.userId,
         status: "EXPIRED",
+      });
+      await markApprovalMessage({
+        kind: "email",
+        id: sessionId,
+        decision: "EXPIRED",
       });
       return c.json({ session_id: row.id, status: "EXPIRED" }, 200);
     }

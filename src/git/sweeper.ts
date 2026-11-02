@@ -1,4 +1,8 @@
 import { db } from "../db/client";
+import {
+  type ApprovalMessageRef,
+  editApprovalMessages,
+} from "../telegram/approvalMessages";
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -9,11 +13,17 @@ export async function sweepGitSessions(): Promise<void> {
   const database = await db();
 
   // Expire pending approvals.
-  await database
+  const expired = await database
     .query(
-      "UPDATE git_sessions SET status = 'EXPIRED', updated_at = ? WHERE status = 'PENDING_APPROVAL' AND approval_expires_at < ?;"
+      "UPDATE git_sessions SET status = 'EXPIRED', updated_at = ? WHERE status = 'PENDING_APPROVAL' AND approval_expires_at < ?" +
+        " RETURNING id, telegram_chat_id, telegram_message_id, telegram_message_html;"
     )
-    .run(now, now);
+    .all<ApprovalMessageRef>(now, now);
+  await editApprovalMessages({
+    kind: "git",
+    refs: expired,
+    decision: "EXPIRED",
+  });
 
   // Expire approved/active sessions after short inactivity window.
   // (Sessions are intended to be short-lived for a single clone/push.)

@@ -23,6 +23,7 @@ import { createProxyRequest } from "../proxy/requests";
 import { decodeBodyForInterpret, truncate } from "../proxy/summary";
 import { validateUpstreamUrl } from "../proxy/url";
 import { telegramApi } from "../telegram/api";
+import { sendApprovalMessage } from "../telegram/approvalMessages";
 
 const CreateProxyRequestSchema = z.object({
   upstream_url: z.string().min(1),
@@ -923,12 +924,13 @@ proxyRouter.post("/request", requireApiKey, async (c) => {
         ],
       };
 
-      await telegramApi()
-        .sendMessage(u.telegram_user_id, text, {
-          reply_markup: kb,
-          parse_mode: "HTML",
-        })
-        .catch(() => {});
+      await sendApprovalMessage({
+        kind: "proxy",
+        id: created.requestId,
+        chatId: u.telegram_user_id,
+        html: text,
+        replyMarkup: kb,
+      });
     }
   }
 

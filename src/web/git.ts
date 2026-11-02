@@ -33,7 +33,7 @@ import {
   withByteLimit,
 } from "../git/stream";
 import { approvalUrl } from "../passkey/webauthn";
-import { telegramApi } from "../telegram/api";
+import { sendApprovalMessage } from "../telegram/approvalMessages";
 
 const CreateSessionSchema = z.object({
   operation: z.enum(["clone", "fetch", "pull", "push"]),
@@ -258,12 +258,13 @@ gitRouter.post("/sessions", requireApiKey, async (c) => {
       ],
     };
 
-    await telegramApi()
-      .sendMessage(u.telegram_user_id, lines.join("\n"), {
-        reply_markup: kb,
-        parse_mode: "HTML",
-      })
-      .catch(() => {});
+    await sendApprovalMessage({
+      kind: "git",
+      id: created.sessionId,
+      chatId: u.telegram_user_id,
+      html: lines.join("\n"),
+      replyMarkup: kb,
+    });
   }
 
   return c.json({
