@@ -66,6 +66,7 @@ Approvals
 
 - The user approves in Telegram via a Review & approve link that requires their passkey; Telegram buttons can only deny.
 - A user may approve an endpoint for 15/60 minutes. Requests from the same API key and IP to the same method + host + path are then created as `APPROVED` immediately.
+- A user may also (advanced) approve all requests to a provider for 15/60 minutes. Requests from the same API key and IP to any URL routed to that provider are then created as `APPROVED` immediately.
 
 Debug
 

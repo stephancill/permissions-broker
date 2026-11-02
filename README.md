@@ -108,7 +108,7 @@ In Telegram (to your bot):
 - `/connect imap` (opens an email connect form; IMAP server is auto-detected; read-only, session-gated)
 - `/keys` (rename/revoke/rotate keys)
 
-Approvals: request messages have a **Review & approve** link (passkey approval page) and a **Deny** button. Proxy requests can be approved once or for 15/60 minutes per endpoint (an approval window, scoped to API key + requester IP + method + host + path).
+Approvals: request messages have a **Review & approve** link (passkey approval page) and a **Deny** button. Proxy requests can be approved once or for 15/60 minutes per endpoint (an approval window, scoped to API key + requester IP + method + host + path). An **Advanced** section (collapsed by default, with a warning) can instead open a 15/60 minute window for every request to the provider from that API key + requester IP.
 
 ## Public API
 

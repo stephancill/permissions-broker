@@ -748,6 +748,7 @@ proxyRouter.post("/request", requireApiKey, async (c) => {
           requesterIp,
           method: methodNorm,
           url: validatedUrl,
+          providerId: provider.id,
         })
       : null;
 
@@ -841,7 +842,7 @@ proxyRouter.post("/request", requireApiKey, async (c) => {
         "<b>Permission request</b>",
         "",
         "Decision: <code>AUTO-APPROVED</code>",
-        `Reason: approval window for this endpoint (until <code>${escapeHtml(approvalWindow.expiresAt)}</code>)`,
+        `Reason: approval window for ${approvalWindow.scope === "provider" ? `all <code>${escapeHtml(provider.id)}</code> requests` : "this endpoint"} (until <code>${escapeHtml(approvalWindow.expiresAt)}</code>)`,
         "",
         `<b>API key</b>: <code>${escapeHtml(auth.apiKeyLabel)}</code>`,
         `<b>Request</b>: <code>${escapeHtml(`${methodNorm} ${url.hostname}${url.pathname}`)}</code>`,

@@ -187,6 +187,13 @@ API key, requester IP, method, host, path) plus a grant targeted at the window.
 Matching requests in the window are auto-approved and reuse that grant; rotation
 keeps it valid. `proxy_always_allow_rules` is dropped.
 
+Provider-wide windows (`0012_provider_approval_windows.sql`): the approval page has
+a collapsed **Advanced** section, with a warning, that opens a window with
+`scope = 'provider'` and `provider_id` set (endpoint columns hold `*`). It covers
+every request routed to that provider from the same user + API key + requester IP.
+The scope is part of the signed approval options, so the passkey assertion commits
+to it. Only offered when the request maps to a provider.
+
 ## Schema (`0011_passkey_credentials.sql`)
 
 - `user_passkeys` (one row per user), `user_keys`.

@@ -245,10 +245,14 @@ async function approveViaPage(params: {
   return { ...(await postJson(base, body)), body };
 }
 
-async function createProxyRequest(keyPlain: string, ip = "203.0.113.7") {
+async function createProxyRequest(
+  keyPlain: string,
+  ip = "203.0.113.7",
+  upstreamUrl = "https://api.github.com/user"
+) {
   const res = await postJson(
     "/v1/proxy/request",
-    { upstream_url: "https://api.github.com/user", method: "GET" },
+    { upstream_url: upstreamUrl, method: "GET" },
     { authorization: `Bearer ${keyPlain}`, "x-forwarded-for": ip }
   );
   expect(res.status).toBe(200);
@@ -416,7 +420,7 @@ test("approval window auto-approves the endpoint and survives rotation", async (
   const approved = await approveViaPage({
     kind: "proxy",
     id: first.request_id as string,
-    options: { mode: "window", minutes: 15 },
+    options: { mode: "window", scope: "endpoint", minutes: 15 },
   });
   expect(approved.status).toBe(200);
   expect((await execute("pb_flow_a", first.request_id as string)).status).toBe(
@@ -433,6 +437,53 @@ test("approval window auto-approves the endpoint and survives rotation", async (
   }
 
   // A different requester IP is not covered by the window.
+  const other = await createProxyRequest("pb_flow_a", "198.51.100.1");
+  expect(other.status).toBe("PENDING_APPROVAL");
+});
+
+test("provider approval window auto-approves any endpoint for the provider", async () => {
+  await resetDb();
+  const userId = await insertUserWithKey("pb_flow_a");
+  await enroll(userId);
+  await saveLinkedCredential({
+    userId,
+    provider: "github",
+    providerUserId: "unknown",
+    scopes: "repo",
+    plaintext: GITHUB_TOKEN,
+  });
+
+  const first = await createProxyRequest("pb_flow_a");
+  const t = await approvalLinkToken({
+    kind: "proxy",
+    id: first.request_id as string,
+  });
+  const page = await app.request(
+    `/approve/proxy/${first.request_id as string}?t=${t}`
+  );
+  const html = await page.text();
+  expect(html).toContain("<summary>Advanced</summary>");
+  expect(html).toContain("window:provider:15");
+
+  const approved = await approveViaPage({
+    kind: "proxy",
+    id: first.request_id as string,
+    options: { mode: "window", scope: "provider", minutes: 15 },
+  });
+  expect(approved.status).toBe(200);
+
+  // A different endpoint on the same provider is covered.
+  const next = await createProxyRequest(
+    "pb_flow_a",
+    "203.0.113.7",
+    "https://api.github.com/user/repos"
+  );
+  expect(next.status).toBe("APPROVED");
+  expect((await execute("pb_flow_a", next.request_id as string)).status).toBe(
+    200
+  );
+
+  // Still scoped to the requester IP.
   const other = await createProxyRequest("pb_flow_a", "198.51.100.1");
   expect(other.status).toBe("PENDING_APPROVAL");
 });

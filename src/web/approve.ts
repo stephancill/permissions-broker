@@ -27,6 +27,7 @@ import {
 } from "../passkey/webauthn";
 import {
   APPROVAL_WINDOW_MINUTES,
+  APPROVAL_WINDOW_SCOPES,
   createApprovalWindow,
 } from "../proxy/approvalWindows";
 import { getProxyProviderForUrl } from "../proxy/providerRegistry";
@@ -56,6 +57,7 @@ const ProxyOptions = z.union([
         z.ZodLiteral<60>,
       ]
     ),
+    scope: z.enum(APPROVAL_WINDOW_SCOPES),
   }),
 ]);
 const GitOptions = z.object({ allow_default_branch_push: z.boolean() });
@@ -255,7 +257,12 @@ function parseOptions(
   if (target.kind === "proxy") {
     const p = ProxyOptions.safeParse(raw);
     if (!p.success) return null;
-    if (p.data.mode === "window" && !target.requesterIp) return null;
+    if (p.data.mode === "window") {
+      if (!target.requesterIp) return null;
+      if (p.data.scope === "provider" && !target.credentialProvider) {
+        return null;
+      }
+    }
     return p.data;
   }
   if (target.kind === "git") {
@@ -337,10 +344,23 @@ function renderOptionsHtml(target: ApprovalTarget): string {
     const windows = target.requesterIp
       ? APPROVAL_WINDOW_MINUTES.map(
           (m) =>
-            `<label><input type="radio" name="opt" value="window:${m}" /> Approve this endpoint for ${m} minutes</label>`
+            `<label><input type="radio" name="opt" value="window:endpoint:${m}" /> Approve this endpoint for ${m} minutes</label>`
         ).join("")
       : "";
-    return `<label><input type="radio" name="opt" value="once" checked /> Approve once</label>${windows}`;
+    const provider = target.credentialProvider
+      ? escapeHtml(target.credentialProvider)
+      : null;
+    const advanced =
+      target.requesterIp && provider
+        ? `<details id="advanced"><summary>Advanced</summary>
+          <p class="error"><b>Warning:</b> this auto-approves <b>every</b> ${provider} request from this API key and IP, including writes and deletes on anything your linked ${provider} account can access. You will not be asked again until it expires. Only use this for an agent you fully trust.</p>
+          ${APPROVAL_WINDOW_MINUTES.map(
+            (m) =>
+              `<label><input type="radio" name="opt" value="window:provider:${m}" /> Approve all ${provider} requests for ${m} minutes</label>`
+          ).join("")}
+        </details>`
+        : "";
+    return `<label><input type="radio" name="opt" value="once" checked /> Approve once</label>${windows}${advanced}`;
   }
   if (target.kind === "git" && target.operation === "push") {
     return `<label><input type="radio" name="opt" value="block_default" checked /> Allow push (block the default branch)</label>
@@ -459,7 +479,8 @@ approveRouter.get("/:kind/:id", async (c) => {
       var el = document.querySelector("input[name=opt]:checked");
       var v = el ? el.value : "";
       if (DATA.kind === "proxy") {
-        if (v.indexOf("window:") === 0) return { mode: "window", minutes: Number(v.slice(7)) };
+        var parts = v.split(":");
+        if (parts[0] === "window") return { mode: "window", scope: parts[1], minutes: Number(parts[2]) };
         return { mode: "once" };
       }
       if (DATA.kind === "git") return { allow_default_branch_push: v === "allow_default" };
@@ -494,6 +515,17 @@ approveRouter.get("/:kind/:id", async (c) => {
       var r = await postJson(base, body);
       setStatus(r.message || "Approved.", "ok");
       document.getElementById("approve").disabled = true;
+    }
+
+    // Collapsing Advanced must not leave a hidden provider-wide option selected.
+    var advancedEl = document.getElementById("advanced");
+    if (advancedEl) {
+      advancedEl.addEventListener("toggle", function () {
+        var sel = document.querySelector("input[name=opt]:checked");
+        if (!advancedEl.open && sel && sel.value.indexOf("window:provider:") === 0) {
+          document.querySelector("input[name=opt][value=once]").checked = true;
+        }
+      });
     }
 
     if (!guardTelegramWebview("main")) {
@@ -706,6 +738,8 @@ approveRouter.post("/:kind/:id", async (c) => {
       requesterIp: target.requesterIp,
       method: target.method,
       url: new URL(target.upstreamUrl),
+      scope: proxyWindow?.scope ?? "endpoint",
+      providerId: target.credentialProvider,
       grantId,
       expiresAt: windowExpiresAt,
     });
@@ -735,7 +769,9 @@ approveRouter.post("/:kind/:id", async (c) => {
   });
 
   const message = windowExpiresAt
-    ? `Approved. Matching requests are auto-approved until ${windowExpiresAt}.`
+    ? proxyWindow?.scope === "provider"
+      ? `Approved. All ${target.credentialProvider} requests from this API key are auto-approved until ${windowExpiresAt}.`
+      : `Approved. Matching requests are auto-approved until ${windowExpiresAt}.`
     : "Approved. You can return to Telegram.";
   return c.json({ ok: true, message });
 });
