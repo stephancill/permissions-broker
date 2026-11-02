@@ -65,6 +65,8 @@ Key points:
 - Keep `APP_BASE_URL` on the same production domain when possible.
 - Register Telegram webhook at `$APP_BASE_URL/telegram/webhook` after Worker deploy.
 
+Deploys: the `permissions-broker` Worker is connected to this repo with Cloudflare Workers Builds. Every push to `main` runs `bun run typecheck && bun test` from the repo root, then `bunx wrangler d1 migrations apply permissions-broker --remote && bunx wrangler deploy`, so pending D1 migrations are applied before the new code goes live.
+
 ## Local dev
 
 1. Install deps
