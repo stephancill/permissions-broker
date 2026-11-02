@@ -1,11 +1,11 @@
-import { beforeEach, expect, test } from "bun:test";
+import { afterAll, beforeAll, beforeEach, expect, test } from "bun:test";
 import { ulid } from "ulid";
 
 import { db } from "../src/db/client";
 import { migrate } from "../src/db/migrate";
 import { createEmailSession } from "../src/email/sessions";
 import { sweepEmailSessions } from "../src/email/sweeper";
-import { configureEnv, env } from "../src/env";
+import { configureEnv, type Env, env } from "../src/env";
 import { telegramApi } from "../src/telegram/api";
 import {
   markApprovalMessage,
@@ -15,17 +15,28 @@ import {
 type Call = { method: string; payload: Record<string, unknown> };
 
 await migrate();
-configureEnv({ ...env, TELEGRAM_BOT_TOKEN: "123:test-token" });
 
-// Intercept Bot API calls instead of hitting Telegram.
 const calls: Call[] = [];
-telegramApi().config.use(async (_prev, method, payload) => {
-  calls.push({ method, payload: payload as Record<string, unknown> });
-  const result =
-    method === "sendMessage"
-      ? { message_id: 42, chat: { id: 777, type: "private" }, date: 0 }
-      : true;
-  return { ok: true, result } as never;
+let prevEnv: Env;
+
+// Scope the bot token to this file: other tests create sessions without
+// APP_BASE_URL and must not try to build Telegram prompts.
+beforeAll(() => {
+  prevEnv = env;
+  configureEnv({ ...env, TELEGRAM_BOT_TOKEN: "123:test-token" });
+  // Intercept Bot API calls instead of hitting Telegram.
+  telegramApi().config.use(async (_prev, method, payload) => {
+    calls.push({ method, payload: payload as Record<string, unknown> });
+    const result =
+      method === "sendMessage"
+        ? { message_id: 42, chat: { id: 777, type: "private" }, date: 0 }
+        : true;
+    return { ok: true, result } as never;
+  });
+});
+
+afterAll(() => {
+  configureEnv(prevEnv);
 });
 
 const PROMPT_HTML = "<b>Email read session request</b>\n\nReview and approve.";
