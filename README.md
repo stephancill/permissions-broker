@@ -67,7 +67,7 @@ Key points:
 - Keep `APP_BASE_URL` on the same production domain when possible.
 - Set `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY` (secret) and `VAPID_SUBJECT` on the Worker.
 
-Production: `https://vault.stupidtech.net` (previously `permissions-broker.stupidtech.net`, which still serves the API and redirects pages; see `docs/DOMAIN_MIGRATION.md`).
+Production: `https://vault.stupidtech.net` (previously `permissions-broker.stupidtech.net`, now retired; see `docs/DOMAIN_MIGRATION.md`).
 
 Deploys: the `permissions-broker` Worker is connected to this repo with Cloudflare Workers Builds. Every push to `main` runs `bun run typecheck && bun test` from the repo root, then `bunx wrangler deploy`. D1 migrations are not applied by the build: run `bunx wrangler d1 migrations apply permissions-broker --remote` before pushing a change that needs them.
 

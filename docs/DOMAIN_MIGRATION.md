@@ -5,7 +5,7 @@ and the passkey's PRF output is what decrypts every linked credential. Moving
 domains therefore keeps old passkeys working through **Related Origin Requests**
 until each user moves theirs. Nothing is re-encrypted on the server.
 
-Used for `permissions-broker.stupidtech.net` → `vault.stupidtech.net`.
+Used for `permissions-broker.stupidtech.net` → `vault.stupidtech.net` (completed 2026-11-21: every passkey moved, `WEBAUTHN_LEGACY_RP_ID` unset, old route removed).
 
 ## How it works
 
