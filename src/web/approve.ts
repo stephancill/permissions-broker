@@ -4,6 +4,7 @@ import { ulid } from "ulid";
 import { z } from "zod";
 
 import { auditEvent } from "../audit/audit";
+import { requireSessionJson, requireSessionPage } from "../auth/session";
 import {
   CredentialError,
   createGrant,
@@ -22,7 +23,6 @@ import {
   getUserPasskey,
   getWrappedPrivateKey,
   storeChallenge,
-  verifyApprovalLinkToken,
   verifyPasskeyAssertion,
 } from "../passkey/webauthn";
 import {
@@ -32,14 +32,12 @@ import {
 } from "../proxy/approvalWindows";
 import { getProxyProviderForUrl } from "../proxy/providerRegistry";
 import { summarizeStoredProxyRequest, truncate } from "../proxy/summary";
-import { markApprovalMessage } from "../telegram/approvalMessages";
 import {
   escapeHtml,
+  POST_JSON_SCRIPT,
   scriptJson,
-  sendKeyPage,
   sendMessagePage,
-  TELEGRAM_WEBVIEW_NOTICE,
-  TELEGRAM_WEBVIEW_SCRIPT,
+  sendPage,
 } from "./pages";
 
 // Session grants are wiped when the session ends; this is a hard cap.
@@ -70,12 +68,10 @@ type ApprovalOptions =
   | z.infer<typeof EmailOptions>;
 
 const ChallengeSchema = z.object({
-  t: z.string().min(1),
   options: z.unknown(),
 });
 
 const ApproveSchema = z.object({
-  t: z.string().min(1),
   nonce: z.string().min(1),
   assertion: z.record(z.string(), z.unknown()),
   dek: z.string().optional(),
@@ -285,31 +281,27 @@ function isExpired(target: ApprovalTarget): boolean {
 
 async function markExpired(target: ApprovalTarget): Promise<void> {
   const database = await db();
-  const table =
-    target.kind === "proxy"
-      ? "proxy_requests"
-      : target.kind === "git"
-        ? "git_sessions"
-        : "email_sessions";
+  const table = tableFor(target.kind);
   const extra =
     target.kind === "proxy" ? ", error_code = 'APPROVAL_EXPIRED'" : "";
-  const res = await database
+  await database
     .query(
       `UPDATE ${table} SET status = 'EXPIRED', updated_at = ?${extra} WHERE id = ? AND status = 'PENDING_APPROVAL';`
     )
     .run(nowIso(), target.id);
-  if (res.changes === 1) {
-    await markApprovalMessage({
-      kind: target.kind,
-      id: target.id,
-      decision: "EXPIRED",
-    });
-  }
 }
 
+function tableFor(kind: ApprovalKind): string {
+  return kind === "proxy"
+    ? "proxy_requests"
+    : kind === "git"
+      ? "git_sessions"
+      : "email_sessions";
+}
+
+// Targets are only visible to the signed-in user who owns them.
 async function resolveTarget(
-  c: Context,
-  token: string | undefined
+  c: Context
 ): Promise<
   { ok: true; target: ApprovalTarget } | { ok: false; error: string }
 > {
@@ -318,11 +310,10 @@ async function resolveTarget(
   if (!kindParsed.success || !id) return { ok: false, error: "not_found" };
   const kind = kindParsed.data;
 
-  if (!(await verifyApprovalLinkToken({ kind, id, token }))) {
-    return { ok: false, error: "invalid_link" };
-  }
   const target = await loadTarget(kind, id);
-  if (!target) return { ok: false, error: "not_found" };
+  if (!target || target.userId !== c.get("webSession").userId) {
+    return { ok: false, error: "not_found" };
+  }
   return { ok: true, target };
 }
 
@@ -379,15 +370,12 @@ function renderOptionsHtml(target: ApprovalTarget): string {
 
 export const approveRouter = new Hono();
 
-approveRouter.get("/:kind/:id", async (c) => {
-  const resolved = await resolveTarget(c, c.req.query("t"));
+approveRouter.get("/:kind/:id", requireSessionPage, async (c) => {
+  const resolved = await resolveTarget(c);
   if (!resolved.ok) {
     return sendMessagePage(c, {
       title: "Approval",
-      message:
-        resolved.error === "invalid_link"
-          ? "This approval link is invalid."
-          : "Request not found.",
+      message: "Request not found.",
       status: 404,
     });
   }
@@ -409,8 +397,7 @@ approveRouter.get("/:kind/:id", async (c) => {
   if (!passkey || !wrapped) {
     return sendMessagePage(c, {
       title: target.heading,
-      message:
-        "No passkey is set up yet. Use /passkey in Telegram, then open this link again.",
+      message: "No passkey is set up for this account.",
       status: 409,
     });
   }
@@ -425,7 +412,7 @@ approveRouter.get("/:kind/:id", async (c) => {
   if (account && (account.enc_version !== 1 || !account.credential_epk)) {
     return sendMessagePage(c, {
       title: target.heading,
-      message: `Your ${target.credentialProvider} credential has not been migrated to passkey encryption. Re-run /passkey or reconnect it.`,
+      message: `Your ${target.credentialProvider} credential has not been migrated to passkey encryption. Replace your passkey under Settings or reconnect the account.`,
       status: 409,
     });
   }
@@ -433,7 +420,6 @@ approveRouter.get("/:kind/:id", async (c) => {
   const data = {
     kind: target.kind,
     id: target.id,
-    t: c.req.query("t"),
     rp_id: expectedRpId(),
     user_id: target.userId,
     passkey: {
@@ -456,31 +442,35 @@ approveRouter.get("/:kind/:id", async (c) => {
 
   const body = `
     <h1>${escapeHtml(target.heading)}</h1>
-    ${TELEGRAM_WEBVIEW_NOTICE}
-    <div id="main">
-      ${renderTargetHtml(target)}
-      ${noCredentialNote}
-      <form id="opts">${renderOptionsHtml(target)}</form>
-      <button id="approve" type="button">Approve with passkey</button>
-      <p class="note">To deny, use the Deny button in Telegram.</p>
-      <p id="status"></p>
-    </div>`;
+    ${renderTargetHtml(target)}
+    ${noCredentialNote}
+    <form id="opts">${renderOptionsHtml(target)}</form>
+    <button id="approve" type="button">Approve with passkey</button>
+    <button id="deny" type="button">Deny</button>
+    <p id="status"></p>`;
 
   const script = `
-    ${TELEGRAM_WEBVIEW_SCRIPT}
+    ${POST_JSON_SCRIPT}
     var DATA = ${scriptJson(data)};
     var statusEl = document.getElementById("status");
     function setStatus(text, cls) { statusEl.textContent = text; statusEl.className = cls || ""; }
 
-    async function postJson(path, body) {
-      var res = await fetch(path, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      var json = await res.json().catch(function () { return {}; });
-      if (!res.ok) throw new Error(json.message || json.error || ("HTTP " + res.status));
-      return json;
+    // Remove this request's notification from the device once decided.
+    function closeNotification() {
+      if (!("serviceWorker" in navigator)) return;
+      navigator.serviceWorker.getRegistration().then(function (reg) {
+        if (!reg) return;
+        return reg.getNotifications({ tag: DATA.kind + ":" + DATA.id }).then(function (ns) {
+          ns.forEach(function (n) { n.close(); });
+        });
+      }).catch(function () {});
+    }
+
+    function decided(message) {
+      setStatus(message, "ok");
+      document.getElementById("approve").disabled = true;
+      document.getElementById("deny").disabled = true;
+      closeNotification();
     }
 
     function selectedOptions() {
@@ -498,7 +488,7 @@ approveRouter.get("/:kind/:id", async (c) => {
     async function approve() {
       var base = "/approve/" + DATA.kind + "/" + encodeURIComponent(DATA.id);
       setStatus("Preparing…");
-      var ch = await postJson(base + "/challenge", { t: DATA.t, options: selectedOptions() });
+      var ch = await postJson(base + "/challenge", { options: selectedOptions() });
 
       setStatus("Confirm with your passkey…");
       var a = await navigator.credentials.get({ publicKey: {
@@ -509,7 +499,7 @@ approveRouter.get("/:kind/:id", async (c) => {
         extensions: { prf: { eval: { first: PB.unb64u(DATA.passkey.prf_salt) } } },
       }});
 
-      var body = { t: DATA.t, nonce: ch.nonce, assertion: PB.assertionToJSON(a) };
+      var body = { nonce: ch.nonce, assertion: PB.assertionToJSON(a) };
       if (DATA.credential) {
         var prf = PB.prfFirst(a);
         if (!prf) throw new Error("Passkey did not return a PRF value.");
@@ -521,8 +511,14 @@ approveRouter.get("/:kind/:id", async (c) => {
 
       setStatus("Approving…");
       var r = await postJson(base, body);
-      setStatus(r.message || "Approved.", "ok");
-      document.getElementById("approve").disabled = true;
+      decided(r.message || "Approved.");
+    }
+
+    async function deny() {
+      var base = "/approve/" + DATA.kind + "/" + encodeURIComponent(DATA.id);
+      setStatus("Denying…");
+      var r = await postJson(base + "/deny", {});
+      decided(r.message || "Denied.");
     }
 
     // Collapsing Advanced must not leave a hidden provider-wide option selected.
@@ -536,23 +532,30 @@ approveRouter.get("/:kind/:id", async (c) => {
       });
     }
 
-    if (!guardTelegramWebview("main")) {
-      document.getElementById("approve").onclick = function () {
-        approve().catch(function (e) { setStatus("Failed: " + (e && e.message ? e.message : e), "error"); });
-      };
-    }
+    document.getElementById("approve").onclick = function () {
+      approve().catch(function (e) { setStatus("Failed: " + errorText(e), "error"); });
+    };
+    document.getElementById("deny").onclick = function () {
+      deny().catch(function (e) { setStatus("Failed: " + errorText(e), "error"); });
+    };
   `;
 
-  return sendKeyPage(c, { title: target.heading, body, script });
+  return sendPage(c, {
+    title: target.heading,
+    body,
+    script,
+    crypto: true,
+    nav: "/app",
+  });
 });
 
-approveRouter.post("/:kind/:id/challenge", async (c) => {
+approveRouter.post("/:kind/:id/challenge", requireSessionJson, async (c) => {
   const parsed = ChallengeSchema.safeParse(
     await c.req.json().catch(() => null)
   );
   if (!parsed.success) return c.json({ error: "invalid_request" }, 400);
 
-  const resolved = await resolveTarget(c, parsed.data.t);
+  const resolved = await resolveTarget(c);
   if (!resolved.ok) return c.json({ error: resolved.error }, 404);
   const target = resolved.target;
 
@@ -588,12 +591,52 @@ approveRouter.post("/:kind/:id/challenge", async (c) => {
   return c.json({ nonce, challenge });
 });
 
-approveRouter.post("/:kind/:id", async (c) => {
+// Denying needs no passkey: it can only take access away.
+approveRouter.post("/:kind/:id/deny", requireSessionJson, async (c) => {
+  const resolved = await resolveTarget(c);
+  if (!resolved.ok) return c.json({ error: resolved.error }, 404);
+  const target = resolved.target;
+  const { sessionId } = c.get("webSession");
+
+  if (target.status === "PENDING_APPROVAL" && isExpired(target)) {
+    await markExpired(target);
+    return c.json({ error: "approval_expired" }, 408);
+  }
+
+  const database = await db();
+  const extra = target.kind === "proxy" ? ", error_code = 'DENIED'" : "";
+  const res = await database
+    .query(
+      `UPDATE ${tableFor(target.kind)} SET status = 'DENIED', updated_at = ?${extra} WHERE id = ? AND user_id = ? AND status = 'PENDING_APPROVAL';`
+    )
+    .run(nowIso(), target.id, target.userId);
+  if (res.changes !== 1) {
+    return c.json({ error: "not_pending", status: target.status }, 409);
+  }
+
+  await auditEvent({
+    userId: target.userId,
+    requestId: target.kind === "proxy" ? target.id : undefined,
+    actorType: "session",
+    actorId: sessionId,
+    eventType:
+      target.kind === "proxy"
+        ? "proxy_request_denied"
+        : target.kind === "git"
+          ? "git_session_denied"
+          : "email_session_denied",
+    event: { target_id: target.id },
+  });
+
+  return c.json({ ok: true, message: "Denied." });
+});
+
+approveRouter.post("/:kind/:id", requireSessionJson, async (c) => {
   const parsed = ApproveSchema.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) return c.json({ error: "invalid_request" }, 400);
   const body = parsed.data;
 
-  const resolved = await resolveTarget(c, body.t);
+  const resolved = await resolveTarget(c);
   if (!resolved.ok) return c.json({ error: resolved.error }, 404);
   const target = resolved.target;
 
@@ -776,26 +819,10 @@ approveRouter.post("/:kind/:id", async (c) => {
     },
   });
 
-  const windowNote = windowExpiresAt
-    ? proxyWindow?.scope === "provider"
-      ? `Auto-approving all ${target.credentialProvider} requests from this API key until ${windowExpiresAt}.`
-      : `Auto-approving matching requests until ${windowExpiresAt}.`
-    : undefined;
-  const defaultBranchNote =
-    "allow_default_branch_push" in options && options.allow_default_branch_push
-      ? "Default-branch pushes allowed."
-      : undefined;
-  await markApprovalMessage({
-    kind: target.kind,
-    id: target.id,
-    decision: "APPROVED",
-    note: windowNote ?? defaultBranchNote,
-  });
-
   const message = windowExpiresAt
     ? proxyWindow?.scope === "provider"
       ? `Approved. All ${target.credentialProvider} requests from this API key are auto-approved until ${windowExpiresAt}.`
       : `Approved. Matching requests are auto-approved until ${windowExpiresAt}.`
-    : "Approved. You can return to Telegram.";
+    : "Approved.";
   return c.json({ ok: true, message });
 });

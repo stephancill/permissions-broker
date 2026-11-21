@@ -38,8 +38,9 @@ Tested with a throwaway page on iOS 18.7, passkey stored in Apple Passwords:
 | Telegram in-app browser (iOS) | `NotAllowedError` | `NotAllowedError` | n/a |
 
 Telegram's in-app browser is an embedded webview without passkey access, even
-though `getClientCapabilities()` reports `extension:prf: true` there. Approval
-pages must therefore run in Safari (or another full browser); see "Approval page".
+though `getClientCapabilities()` reports `extension:prf: true` there. This was
+one reason the Telegram bot was replaced by a PWA (`docs/PWA_PUSH.md`): the
+approval pages now open in the installed home-screen app or Safari.
 
 ## Key hierarchy
 
@@ -95,22 +96,29 @@ with an old grant DEK; `unlockCredential` retries the read a few times.
 
 ## Flows
 
-### Enrollment (`/passkey` in Telegram → `/passkey/enroll`)
+### Enrollment (sign-up at `/app/signin`, replacement at `/passkey/enroll`)
 
-1. Telegram `/passkey` replies with a URL button to a single-use enrollment link
-   (`connect_states` row, provider `passkey`, 10 minutes).
-2. `POST /passkey/enroll/options` returns WebAuthn registration options, a fresh
-   `prf_salt` and, when re-enrolling, the current passkey id, salt, public key and
-   wrapped private key.
+1. Sign-up (`POST /passkey/signup/options`, no session; open only on an empty
+   broker or with `ALLOW_SIGNUP`) issues registration options for a prospective
+   user id, stored single use in `auth_challenges`. Replacement
+   (`POST /passkey/enroll/options`) requires the signed-in session.
+2. The options response carries a fresh `prf_salt` and, when replacing, the
+   current passkey id, salt, public key and wrapped private key.
 3. The page calls `navigator.credentials.create` (`residentKey: "required"`,
    `userVerification: "required"`, `extensions.prf.eval.first = prf_salt`). If no
    PRF output comes back at create time it runs one `get` to obtain it, and fails
    loudly if PRF is unavailable.
 4. The client generates the P-256 keypair (or, for re-wrap, first unlocks the
    current private key with the current passkey), wraps it under the new KEK and
-   posts `POST /passkey/enroll/verify`.
-5. The server verifies the registration, stores `user_passkeys` + `user_keys`, and
-   migrates legacy credentials (below).
+   posts `POST /passkey/signup/verify` or `POST /passkey/enroll/verify`.
+5. The server verifies the registration and stores `user_passkeys` + `user_keys`.
+   Sign-up also creates the `users` row and a web session; replacement migrates
+   legacy credentials (below).
+
+The passkey is also the account: sign-in (`/passkey/signin/*`) is a usernameless
+assertion (no `allowCredentials`) resolved to a user by credential id, and creates
+an HttpOnly session cookie. The session gates the app and approval pages; each
+approval still needs its own passkey assertion.
 
 One passkey per user; re-enrolling replaces it:
 
@@ -121,28 +129,23 @@ One passkey per user; re-enrolling replaces it:
 
 ### Connecting accounts
 
-UX is unchanged, but `/connect` and the connect forms require an enrolled passkey
+Accounts are connected from the app's Accounts tab; the links and connect forms require an enrolled passkey
 (fail loudly otherwise). The server receives the credential (OAuth callback,
 Cloudflare/IMAP forms), validates it, and `saveLinkedCredential` ECIES-encrypts it
 to the user's public key. Non-secret display metadata (IMAP email/host/port,
 Cloudflare account list) is stored in `metadata_json`, so `GET /v1/accounts` never
 decrypts credentials.
 
-### Approval (`/approve/:kind/:id?t=<link token>`)
+### Approval (`/approve/:kind/:id`)
 
 `kind` is `proxy`, `git` or `email`.
 
-1. Telegram messages carry a **Review & approve** URL button and a **Deny** callback
-   button. Telegram buttons can no longer approve (old messages' Approve buttons
-   answer with a hint). Git push default-branch permission and approval windows
-   are chosen on the page. The sent message's chat id, message id and HTML are
-   stored on the request/session row (migration `0013`) so the prompt can be
-   edited with the decision and its buttons removed when it is approved on the
-   page, denied in Telegram, or expires (`src/telegram/approvalMessages.ts`).
-2. `t` is `HMAC(APP_SECRET, "approve:<kind>:<id>")`; the page embeds the wrapped
-   private key, so it is only reachable from the Telegram link.
-3. In Telegram's in-app browser (`window.TelegramWebviewProxy`) the page shows
-   "Open in Safari" with a copy-link button instead of the approve UI.
+1. A push notification links to the page; the app's Requests tab lists it too.
+   Git push default-branch permission and approval windows are chosen on the page.
+2. The page requires the web session of the request's owner (it embeds the
+   wrapped private key). Before the PWA this was an HMAC link token sent via
+   Telegram.
+3. **Deny** posts to `/approve/:kind/:id/deny` and needs only the session.
 4. `POST /approve/:kind/:id/challenge` validates the chosen options and returns a
    challenge `SHA-256(JSON{kind, id, request_hash, options, nonce})`, stored single
    use in `webauthn_challenges`.
@@ -228,8 +231,8 @@ the WebAuthn RP ID and expected origin. Changing the domain invalidates passkeys
 
 - `src/crypto/ecies.ts`: server ECIES; `src/passkey/clientCrypto.ts`: browser side.
 - `src/credentials/store.ts`: storage, grants, unlock + rotation, legacy migration.
-- `src/passkey/webauthn.ts`: challenges, link tokens, assertion verification.
-- `src/web/passkey.ts`, `src/web/approve.ts`, `src/web/pages.ts`: pages and routes.
+- `src/passkey/webauthn.ts`: challenges (incl. pre-auth sign-in/sign-up), assertion verification.
+- `src/web/passkey.ts` (sign-up/sign-in/replace), `src/web/approve.ts`, `src/web/app.ts`, `src/web/pages.ts`: pages and routes.
 - `src/proxy/approvalWindows.ts`: approval windows.
 - Tests: `tests/passkey_crypto.test.ts` (browser ↔ server crypto),
   `tests/passkey_flow.test.ts` (end to end with a software authenticator in

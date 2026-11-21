@@ -1,5 +1,9 @@
 # Railway to Cloudflare Workers Migration
 
+> Since this migration the Telegram bot has been removed (`docs/PWA_PUSH.md`).
+> Skip the Telegram webhook/token steps; set `VAPID_PUBLIC_KEY`,
+> `VAPID_PRIVATE_KEY` and `VAPID_SUBJECT` on the Worker instead.
+
 This repo can run the permissions broker on Cloudflare Workers with D1.
 `/v1/git/*` is mounted on the Worker, but large clone/push operations should be validated against Cloudflare Worker body/time limits before relying on it for heavy repositories.
 

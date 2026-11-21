@@ -1,8 +1,4 @@
 import { db } from "../db/client";
-import {
-  type ApprovalMessageRef,
-  editApprovalMessages,
-} from "../telegram/approvalMessages";
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -13,17 +9,11 @@ export async function sweepEmailSessions(): Promise<void> {
   const database = await db();
 
   // Expire pending approvals.
-  const expired = await database
+  await database
     .query(
-      "UPDATE email_sessions SET status = 'EXPIRED', updated_at = ? WHERE status = 'PENDING_APPROVAL' AND approval_expires_at < ?" +
-        " RETURNING id, telegram_chat_id, telegram_message_id, telegram_message_html;"
+      "UPDATE email_sessions SET status = 'EXPIRED', updated_at = ? WHERE status = 'PENDING_APPROVAL' AND approval_expires_at < ?;"
     )
-    .all<ApprovalMessageRef>(now, now);
-  await editApprovalMessages({
-    kind: "email",
-    refs: expired,
-    decision: "EXPIRED",
-  });
+    .run(now, now);
 
   // Expire approved/active sessions after a short inactivity window.
   // (Sessions authorize a bounded read window; never keep them open.)

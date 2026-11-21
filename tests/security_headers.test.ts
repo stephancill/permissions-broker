@@ -1,8 +1,6 @@
 import { expect, test } from "bun:test";
 
 import { createApp } from "../src/app";
-import { createConnectState } from "../src/connect/state";
-import { db } from "../src/db/client";
 import { migrate } from "../src/db/migrate";
 import { configureEnv, env } from "../src/env";
 
@@ -24,24 +22,43 @@ test("default security headers are applied", async () => {
   );
 });
 
-test("passkey pages keep their own nonce-based CSP", async () => {
-  const database = await db();
-  const userId = `u_${crypto.randomUUID()}`;
-  await database
-    .query(
-      "INSERT INTO users (id, telegram_user_id, created_at, status) VALUES (?, ?, ?, 'active');"
-    )
-    .run(userId, Math.floor(Math.random() * 1e9), new Date().toISOString());
-  const { state } = await createConnectState({
-    userId,
-    provider: "passkey",
-    ttlMs: 60_000,
-  });
-
-  const res = await app.request(`/passkey/enroll?state=${state}`);
+test("app pages keep their own nonce-based CSP and are installable", async () => {
+  const res = await app.request("/app/signin");
   expect(res.status).toBe(200);
   const csp = res.headers.get("content-security-policy") ?? "";
   expect(csp).toMatch(/script-src 'nonce-[^']+'/);
+  expect(csp).toContain("manifest-src 'self'");
+  expect(csp).toContain("worker-src 'self'");
+  expect(csp).toContain("form-action 'self'");
   // Other defaults are still added.
   expect(res.headers.get("x-frame-options")).toBe("DENY");
+  const html = await res.text();
+  expect(html).toContain(
+    '<link rel="manifest" href="/manifest.webmanifest" />'
+  );
+  expect(html).toContain('rel="apple-touch-icon"');
+});
+
+test("manifest and service worker are served for the PWA", async () => {
+  const manifest = await app.request("/manifest.webmanifest");
+  expect(manifest.headers.get("content-type")).toBe(
+    "application/manifest+json"
+  );
+  const m = (await manifest.json()) as { display: string; start_url: string };
+  expect(m.display).toBe("standalone");
+  expect(m.start_url).toBe("/app");
+
+  const sw = await app.request("/sw.js");
+  expect(sw.headers.get("content-type")).toContain("text/javascript");
+  const js = await sw.text();
+  expect(js).toContain('addEventListener("push"');
+  expect(js).toContain('addEventListener("notificationclick"');
+});
+
+test("signed-out app pages redirect to passkey sign-in", async () => {
+  for (const path of ["/app", "/app/keys", "/passkey/enroll"]) {
+    const res = await app.request(path);
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toStartWith("/app/signin?next=");
+  }
 });

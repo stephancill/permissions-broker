@@ -128,6 +128,14 @@ build, so the prompt arrives when the user is waiting for it.
 
 ## Session endpoints
 
+The session's base URL is `/v1/release/session/:id/:secret`. `stupid-app` reads it from
+`STUPID_APP_RELEASE_SESSION` and calls the endpoints below relative to it.
+
+### Session info: `GET /v1/release/session/:id/:secret/info`
+
+Returns `{ teamId, distributionCertificateId, bundleIds }` for `stupid-app` (the team for
+CodeDirectories, the certificate `signing fetch` downloads, the approved bundles).
+
 ### ASC proxy: `/v1/release/session/:id/:secret/asc/v1/...`
 
 Forwards to `https://api.appstoreconnect.apple.com/v1/...` with a broker-created
@@ -146,7 +154,8 @@ Allowed requests, each checked against the session's app ids and bundle ids:
 | GET, PATCH | `/buildUploads/:id` | the upload was created in this session |
 | POST | `/buildUploadFiles` | body's `buildUpload` relationship was created in this session |
 | PATCH | `/buildUploadFiles/:id` | the file was created in this session |
-| GET | `/profiles` | `filter[profileType]=IOS_APP_STORE`, bundle id filter approved |
+| GET | `/bundleIds` | `filter[identifier]` is an approved bundle id |
+| GET | `/bundleIds/:id/profiles` | `:id` is an approved bundle id's resource id |
 | GET | `/certificates/:id` | `:id` is the credential's distribution certificate |
 
 Everything else is refused (403) and logged. The exact list is confirmed against
@@ -155,33 +164,37 @@ profile fetch make, recorded from a real run.
 
 ### Signing: `POST /v1/release/session/:id/:secret/sign`
 
-Request: the CodeDirectory blobs of one bundle (all hash types) and the DER CMS
-signed attributes `stupid-app` built for them. The broker:
+Request: `{ codeDirectory, signedAttributes }` (base64): one bundle's CodeDirectory
+(`stupid-app` emits a single SHA-256 CodeDirectory) and the DER CMS signed attributes
+(the SET the signature covers). Response: `{ signature }` (base64). `stupid-app`
+verifies the signature against the certificate. The broker:
 
 1. Parses each CodeDirectory and requires its identifier to be an approved bundle
    id and its team id to be the credential's team.
-2. Recomputes the cdhashes and requires the signed attributes to contain exactly
-   those digests (`messageDigest` of the primary CodeDirectory, the cdhash plist
-   and the cdhashes attribute) and nothing else beyond `contentType` and
-   `signingTime`.
+2. Recomputes the CodeDirectory's SHA-256 and requires the signed attributes to be
+   exactly `contentType` (id-data), `messageDigest`, the Apple cdhash plist (the
+   first 20 bytes) and the Apple cdhashes attribute, all naming that digest, in DER
+   canonical order and with no other attribute (no signing time or timestamp).
 3. Signs the signed attributes with the distribution key (RSASSA-PKCS1-v1_5,
    SHA-256) and returns the signature.
 
-At most one signature per approved bundle id per session. Each signature's
+At most one signature per approved bundle id per session (`stupid-app` settles the
+signature size with a placeholder and signs once per bundle). Each signature's
 bundle id and cdhashes go to `audit_events`. This keeps the endpoint from signing
 arbitrary data.
 
 ## stupid-app changes (stupid-ios-dev)
 
-- A signer abstraction in `NativeCMS`: the local key (current behaviour) or a
-  remote signer when `STUPID_APP_REMOTE_SIGNER_URL` is set. Each returned
+Implemented (not yet released):
+
+- `CMSSigner` in `NativeCMS`: the local key or a remote signer. Each returned
   signature is verified against the certificate's public key; a mismatch fails
   loudly.
-- `STUPID_APP_ASC_BASE_URL`: `ASCClient` sends no JWT, and the ASC key and
-  distribution key are not required.
-- `stupid-app signing fetch --kind distribution`: downloads the current App Store
-  profiles and the distribution certificate through the ASC API. It never creates
-  certificates or profiles.
+- `STUPID_APP_RELEASE_SESSION`: every App Store Connect call goes to the session's
+  `asc/v1` without a JWT, the team comes from `info`, and `release archive` signs
+  through `sign` with only the certificate stored.
+- `stupid-app signing fetch`: downloads the distribution certificate and the
+  current App Store profiles. It never creates certificates or profiles.
 
 ## GitHub workflow
 
@@ -221,7 +234,7 @@ Manual trigger only (`workflow_dispatch`).
 
 ## Order of work
 
-1. stupid-app: remote signer, ASC base URL, `signing fetch`; release.
+1. stupid-app: remote signer, release sessions, `signing fetch` (implemented); release.
 2. Broker: `apple-release` credential, policies and `/release-allow`, OIDC
    verification, release sessions, ASC proxy, signing endpoint, approval page,
    sweeper, tests, skill docs.

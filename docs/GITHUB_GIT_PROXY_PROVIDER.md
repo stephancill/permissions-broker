@@ -2,14 +2,14 @@
 
 Last updated: 2026-02-13
 
-This document proposes a GitHub provider that supports pure proxy `git clone` and `git push` over HTTPS (Git smart HTTP) behind a Telegram approval gate.
+This document proposes a GitHub provider that supports pure proxy `git clone` and `git push` over HTTPS (Git smart HTTP) behind a passkey approval gate (push notification to the PWA).
 
 The key property is one approval per clone/push request (session), not per file.
 
 ## Goals
 
 - Support basic `git clone` and `git push` for GitHub repositories via the broker.
-- Require a single Telegram approval per clone/push session.
+- Require a single approval per clone/push session.
 - Use the user's GitHub OAuth token server-side; never expose tokens to the agent.
 - Warn about pushes to the default branch and block them unless explicitly approved.
 - Disallow deletions.
@@ -43,7 +43,7 @@ The broker should proxy only these paths and only to `github.com`.
 Introduce an approved "git session".
 
 1. Agent creates a session request (`clone` or `push`) via broker API.
-2. Broker sends a Telegram prompt.
+2. Broker sends a push notification linking to the approval page.
 3. User approves once.
 4. Broker returns a session-scoped remote URL containing a short-lived secret.
 5. Agent runs `git clone`/`git fetch`/`git pull`/`git push` against the broker remote URL.
@@ -146,30 +146,16 @@ Default branch warning/block:
 
 - Determine default branch ref by parsing the `symref=HEAD:refs/heads/<name>` capability from the receive-pack handshake advertisement.
 - By default, reject push commands that update the default branch ref.
-- The passkey approval page offers two push options (Telegram only links to it):
+- The passkey approval page offers two push options (the notification only links to it):
   - Allow push (block default branch)
   - Allow push including the default branch
 
-## Telegram prompts
+## Approval prompts
 
-Clone prompt:
-
-- Repo: owner/repo
-- Operation: Clone
-- Buttons: Approve / Deny
-
-Push prompt:
-
-- Repo: owner/repo
-- Operation: Push
-- Warnings:
-  - Deletions are not allowed
-  - Tag pushes are not allowed
-  - Default branch pushes are blocked unless explicitly allowed
-- Buttons:
-  - Approve push (block default branch)
-  - Approve push (allow default branch)
-  - Deny
+The push notification names the API key, repo and operation (clone/fetch: read;
+push: write, with "default-branch pushes stay blocked unless you allow them").
+The approval page shows the details, the push options above, Approve with
+passkey and Deny. Deletions and tag updates are always blocked.
 
 ## Implementation notes (MVP)
 
@@ -183,7 +169,7 @@ Push prompt:
 
 1. Add GitHub OAuth provider config and connect flow.
 2. Add git session DB + broker API endpoints.
-3. Add Telegram approval flow for sessions.
+3. Add the approval flow for sessions.
 4. Implement git proxy endpoints with streaming.
 5. Add pkt-line parsing + push enforcement.
 6. Add unit tests for pkt-line parsing and basic session gating.

@@ -1,6 +1,6 @@
 # Agent Contributing Guide
 
-This repo is a Bun + Hono service that gates external access behind Telegram-notified, passkey-confirmed approvals.
+This repo is a Bun + Hono service that gates external access behind push-notified, passkey-confirmed approvals. Users interact through an installable PWA (`/app`).
 It has two primary surfaces:
 
 1. Generic approval-gated HTTP proxy (`/v1/proxy/*`) for supported providers
@@ -24,7 +24,7 @@ cp .env.example .env.local
 
 Fill in at least:
 
-- `TELEGRAM_BOT_TOKEN`
+- `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` / `VAPID_SUBJECT` (`bun scripts/vapid_keys.ts`)
 - `APP_BASE_URL` (publicly reachable for OAuth callback if testing OAuth locally)
 - `APP_SECRET` (encrypts short-lived approval keys, session secrets, and legacy credentials)
 - OAuth client credentials (Google/GitHub)
@@ -75,7 +75,12 @@ Formatting/linting uses Biome.
   - `src/web/email.ts`: read-only email session APIs (generic IMAP)
   - `src/web/accounts.ts`: OAuth callback + list accounts
   - `src/web/passkey.ts`, `src/web/approve.ts`: passkey enrollment and approval pages
-- `src/telegram/`: bot + polling
+- `src/web/app.ts`: PWA pages (inbox, API keys, accounts, settings), push subscribe, manifest + service worker
+- `src/auth/session.ts`: passkey-created browser sessions (cookie), same-origin write checks
+- `src/auth/apiKeyAdmin.ts`: API key create/rename/rotate/revoke
+- `src/connect/links.ts`: OAuth/connect-form link creation, provider list
+- `src/push/`: Web Push (VAPID + RFC 8291 encryption on WebCrypto) and per-user fan-out
+- `public/`: PWA icons (Workers assets binding; `serveStatic` under Bun)
 - `src/oauth/`: generic OAuth flow + state handling
 - `src/email/`: read-only IMAP client, session persistence, curated ops
 - `src/providers/<provider>/`:
@@ -94,12 +99,12 @@ Formatting/linting uses Biome.
 ### API keys
 
 - Clients authenticate to the broker via `Authorization: Bearer <pb_...>`.
-- The API key label is the identity shown to the user in Telegram.
+- The API key label is the identity shown to the user in push notifications and approval pages.
 - Do not accept "caller_label" or similar identity claims in request bodies.
 
 ### Proxy request lifecycle (`/v1/proxy`)
 
-- Create: `POST /v1/proxy/request` (stores immutable request; always prompts Telegram)
+- Create: `POST /v1/proxy/request` (stores immutable request; pushes to the user unless an approval window covers it)
 - Status: `GET /v1/proxy/requests/:id` (status-only JSON)
   - Returns HTTP 202 with JSON for actionable states
 - Execute: `POST /v1/proxy/requests/:id/execute`
@@ -137,7 +142,7 @@ To add a new provider:
 - Remote URL: `GET /v1/git/sessions/:id/remote`
 - Smart HTTP proxy path: `/v1/git/session/:id/:secret/...`
 
-Sessions are short-lived and approval-gated via Telegram.
+Sessions are short-lived and approval-gated (push + passkey).
 Push sessions enforce extra protections (no tags, no deletes, default branch gating).
 
 ### Email read session lifecycle (`/v1/email`)
@@ -156,14 +161,31 @@ See `docs/PASSKEY_CREDENTIAL_ENCRYPTION.md`.
 - Linked credentials are ECIES-encrypted to the user's public key; only the user's
   passkey (WebAuthn PRF) can unwrap the private key. The server can encrypt but
   never decrypt on its own.
-- Approvals happen on `/approve/:kind/:id` (passkey assertion + DEK). Telegram
-  buttons can only deny.
+- Approvals happen on `/approve/:kind/:id` (passkey assertion + DEK); the page
+  requires the owner's web session. Deny needs only the session.
 - Never read credentials with `decryptUtf8`; go through `src/credentials/store.ts`
   (`saveLinkedCredential`, `createGrant`, `unlockCredential`). Unlock rotates the
   ciphertext, so never cache decrypted credentials across requests.
 - `src/passkey/clientCrypto.ts` must stay byte-compatible with
   `src/crypto/ecies.ts`; `tests/passkey_crypto.test.ts` checks this.
 - Key-material pages must not load third-party scripts (see `src/web/pages.ts` CSP).
+
+### Web sessions and push
+
+See `docs/PWA_PUSH.md`.
+
+- Accounts are identified by their passkey: sign-in is a usernameless assertion
+  looked up by credential id. Sign-up is open only on an empty broker unless
+  `ALLOW_SIGNUP=true`.
+- Cookie-authenticated writes go through `requireSessionJson`/`requireSessionPage`
+  (Origin / `Sec-Fetch-Site` check). Never add a cookie-authenticated POST without them.
+- Push endpoints are restricted to the browser push services
+  (`isAllowedPushEndpoint`); the broker must never POST to arbitrary URLs.
+- Push payloads are end-to-end encrypted to the device but still keep them to
+  summaries (no credentials, no response bodies).
+- `users.telegram_user_id` is a legacy NOT NULL UNIQUE column that cannot be
+  dropped on D1 (rebuilding `users` cascades deletes). New users get a random
+  negative placeholder; nothing reads it.
 
 ## Security/Privacy Rules
 

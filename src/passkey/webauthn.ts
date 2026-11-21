@@ -4,12 +4,7 @@ import {
 } from "@simplewebauthn/server";
 import { ulid } from "ulid";
 
-import {
-  bytesEqual,
-  fromBase64Url,
-  toBase64Url,
-  toBytes,
-} from "../crypto/bytes";
+import { toBase64Url, toBytes } from "../crypto/bytes";
 import { db } from "../db/client";
 import { env } from "../env";
 
@@ -38,49 +33,8 @@ export function appUrl(path: string): string {
   return `${baseUrl().origin}${path}`;
 }
 
-async function hmacKey(): Promise<CryptoKey> {
-  if (!env.APP_SECRET) throw new Error("APP_SECRET not configured");
-  return crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(`pb-link-v1:${env.APP_SECRET}`),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"]
-  );
-}
-
-// Unguessable per-target token so approval pages (which embed the wrapped
-// private key) are only reachable from the Telegram link.
-export async function approvalLinkToken(params: {
-  kind: string;
-  id: string;
-}): Promise<string> {
-  const sig = await crypto.subtle.sign(
-    "HMAC",
-    await hmacKey(),
-    new TextEncoder().encode(`approve:${params.kind}:${params.id}`)
-  );
-  return toBase64Url(new Uint8Array(sig));
-}
-
-export async function verifyApprovalLinkToken(params: {
-  kind: string;
-  id: string;
-  token: string | undefined;
-}): Promise<boolean> {
-  if (!params.token) return false;
-  const expected = fromBase64Url(await approvalLinkToken(params));
-  return bytesEqual(expected, fromBase64Url(params.token));
-}
-
-export async function approvalUrl(params: {
-  kind: string;
-  id: string;
-}): Promise<string> {
-  const t = await approvalLinkToken(params);
-  return appUrl(
-    `/approve/${params.kind}/${encodeURIComponent(params.id)}?t=${t}`
-  );
+export function approvalPath(params: { kind: string; id: string }): string {
+  return `/approve/${params.kind}/${encodeURIComponent(params.id)}`;
 }
 
 // The approval challenge commits to what is being approved, so the stored
@@ -169,6 +123,77 @@ export async function consumeChallenge(params: {
     .run(nowIso(), params.nonce);
   if (res.changes !== 1) return null;
   return row;
+}
+
+// Challenges issued before the user is known: sign-in (usernameless) and
+// sign-up (user_id is the prospective account id).
+export type AuthChallengePurpose = "signin" | "signup";
+
+export async function storeAuthChallenge(params: {
+  purpose: AuthChallengePurpose;
+  challenge: string;
+  userId?: string;
+  options?: unknown;
+}): Promise<{ nonce: string }> {
+  const nonce = ulid();
+  const database = await db();
+  await database
+    .query(
+      "INSERT INTO auth_challenges (nonce, purpose, user_id, challenge, options_json, created_at, expires_at, used_at) VALUES (?, ?, ?, ?, ?, ?, ?, NULL);"
+    )
+    .run(
+      nonce,
+      params.purpose,
+      params.userId ?? null,
+      params.challenge,
+      params.options === undefined ? null : JSON.stringify(params.options),
+      nowIso(),
+      new Date(Date.now() + CHALLENGE_TTL_MS).toISOString()
+    );
+  return { nonce };
+}
+
+export async function consumeAuthChallenge(params: {
+  nonce: string;
+  purpose: AuthChallengePurpose;
+}): Promise<{
+  user_id: string | null;
+  challenge: string;
+  options_json: string | null;
+} | null> {
+  const database = await db();
+  const row = (await database
+    .query(
+      "SELECT user_id, challenge, options_json, expires_at, used_at FROM auth_challenges WHERE nonce = ? AND purpose = ?;"
+    )
+    .get(params.nonce, params.purpose)) as {
+    user_id: string | null;
+    challenge: string;
+    options_json: string | null;
+    expires_at: string;
+    used_at: string | null;
+  } | null;
+  if (!row || row.used_at) return null;
+  if (Date.now() > Date.parse(row.expires_at)) return null;
+  const res = await database
+    .query(
+      "UPDATE auth_challenges SET used_at = ? WHERE nonce = ? AND used_at IS NULL;"
+    )
+    .run(nowIso(), params.nonce);
+  if (res.changes !== 1) return null;
+  return row;
+}
+
+export async function userIdForCredential(
+  credentialId: string
+): Promise<string | null> {
+  const database = await db();
+  const row = (await database
+    .query(
+      "SELECT p.user_id FROM user_passkeys p JOIN users u ON u.id = p.user_id WHERE p.credential_id = ? AND u.status = 'active';"
+    )
+    .get(credentialId)) as { user_id: string } | null;
+  return row?.user_id ?? null;
 }
 
 export type UserPasskey = {

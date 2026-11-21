@@ -1,5 +1,9 @@
 ## 0) What you’re building
 
+> **Historical.** Written when the user surface was a Telegram bot. It has since
+> been replaced by a passkey-authenticated PWA with Web Push; see
+> `docs/PWA_PUSH.md`. Telegram references below describe the old design.
+
 A Telegram bot + backend that:
 
 1. Lets a user **connect external accounts** (OAuth).

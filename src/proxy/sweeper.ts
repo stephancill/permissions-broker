@@ -1,11 +1,8 @@
+import { sweepWebSessions } from "../auth/session";
 import { sweepCredentialGrants } from "../credentials/store";
 import { db } from "../db/client";
 import { sweepEmailSessions } from "../email/sweeper";
 import { sweepGitSessions } from "../git/sweeper";
-import {
-  type ApprovalMessageRef,
-  editApprovalMessages,
-} from "../telegram/approvalMessages";
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -16,22 +13,17 @@ export async function sweepApprovalExpirations(): Promise<number> {
   const expired = await database
     .query(
       "UPDATE proxy_requests SET status = 'EXPIRED', updated_at = ?, error_code = 'APPROVAL_EXPIRED' " +
-        "WHERE status = 'PENDING_APPROVAL' AND approval_expires_at < ?" +
-        " RETURNING id, telegram_chat_id, telegram_message_id, telegram_message_html;"
+        "WHERE status = 'PENDING_APPROVAL' AND approval_expires_at < ?;"
     )
-    .all<ApprovalMessageRef>(nowIso(), nowIso());
-  await editApprovalMessages({
-    kind: "proxy",
-    refs: expired,
-    decision: "EXPIRED",
-  });
-  return expired.length;
+    .run(nowIso(), nowIso());
+  return expired.changes ?? 0;
 }
 
 export async function sweepExpiredState(): Promise<void> {
   await sweepApprovalExpirations();
   await sweepGitSessions();
   await sweepEmailSessions();
+  await sweepWebSessions();
   // After session sweeps so keys of just-expired targets are wiped too.
   await sweepCredentialGrants();
 }

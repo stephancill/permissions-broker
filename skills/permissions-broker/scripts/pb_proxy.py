@@ -28,7 +28,7 @@ Usage:
 PB options:
   --pb-timeout-seconds <n>     Approval polling timeout in seconds (default: 30)
   --pb-poll-interval <n>       Poll interval in seconds (default: 1)
-  --pb-consent-hint <text>     Consent hint shown in Telegram
+  --pb-consent-hint <text>     Consent hint shown on the approval request
   --pb-idempotency-key <key>   Idempotency key for create request
   --pb-base-url <url>          Broker URL (default: https://permissions-broker.stupidtech.net)
   -h, --help                   Show this help

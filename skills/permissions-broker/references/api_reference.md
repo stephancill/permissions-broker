@@ -9,7 +9,7 @@ Base URL: the broker service URL `https://permissions-broker.stupidtech.net`.
 Auth
 
 - Header: `Authorization: Bearer <USER_API_KEY>`
-- The API key label (set by the user at key creation time) is the caller identity shown in Telegram approvals.
+- The API key label (set by the user at key creation time) is the caller identity shown in push notifications and on the approval page.
 
 Create request
 
@@ -64,7 +64,7 @@ Execute (retrieve upstream bytes)
 
 Approvals
 
-- The user approves in Telegram via a Review & approve link that requires their passkey; Telegram buttons can only deny.
+- The user gets a push notification on their installed Permissions Broker app; the approval page requires their passkey to approve, and has a Deny button.
 - A user may approve an endpoint for 15/60 minutes. Requests from the same API key and IP to the same method + host + path are then created as `APPROVED` immediately.
 - A user may also (advanced) approve all requests to a provider for 15/60 minutes. Requests from the same API key and IP to any URL routed to that provider are then created as `APPROVED` immediately.
 
@@ -86,7 +86,7 @@ Connected services
 
 ## Read-only Email (`/v1/email`)
 
-Generic IMAP email access, gated by a short-lived Telegram-approved session. Read-only by
+Generic IMAP email access, gated by a short-lived, passkey-approved session. Read-only by
 construction (mailboxes are opened with IMAP `EXAMINE`).
 
 Create session
@@ -103,7 +103,7 @@ Create session
 Poll session
 
 - `GET /v1/email/sessions/:id`
-- Statuses: `PENDING_APPROVAL` (approve in Telegram), `APPROVED`, `ACTIVE`, `DENIED`, `EXPIRED`
+- Statuses: `PENDING_APPROVAL` (user approves in the app), `APPROVED`, `ACTIVE`, `DENIED`, `EXPIRED`
 - Must use the same API key that created the session.
 
 List folders
@@ -196,7 +196,7 @@ Use short, action-forward phrasing. Do not lead with inability/disclaimer langua
 
 Good:
 
-- "I'll do that via your Permissions Broker. I'll request <upstream_url>, you approve in Telegram, then I'll fetch the result."
+- "I'll do that via your Permissions Broker. I'll request <upstream_url>, you approve it in the Permissions Broker app, then I'll fetch the result."
 - "To read that Sheet in MVP, I'll export it via Drive as CSV and parse it."
 
 Avoid:
@@ -214,7 +214,7 @@ Avoid:
 These errors are returned as JSON from the broker (not upstream bytes).
 
 - `403 {"error":"forbidden"}`: wrong API key or request not accessible to this key
-- `403 {"error":"denied"}`: user denied the request in Telegram
+- `403 {"error":"denied"}`: user denied the request in the app
 - `408 {"error":"approval_expired"}`: approval TTL elapsed
 - `409 {"error":"executing"}`: someone else is executing; retry shortly
 - `410 {"error":"already_executed"}`: one-time request already consumed; create a new one

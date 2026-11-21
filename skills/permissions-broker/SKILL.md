@@ -8,16 +8,13 @@ description: Use the Permissions Broker for approval-gated external API access, 
 ## Setup
 
 1. Check for `PB_API_KEY` in local secrets.
-2. If missing, ask the user to create one in Telegram:
-
-```text
-/key <name>
-```
+2. If missing, ask the user to create one in the Permissions Broker app
+   (`<broker>/app/keys` → enter a label → Create API key; it is shown once).
 
 3. Ask whether to store/reuse across sessions.
 4. Never print or commit the API key.
 
-Provider linking is done by the user in Telegram with `/connect`.
+Provider linking is done by the user in the app under **Accounts** (`<broker>/app/accounts`).
 
 ## Default Approach
 
@@ -25,7 +22,7 @@ Use the broker as the default mechanism for external requests.
 
 - Keep prompts action-oriented: propose the exact upstream request you will make.
 - Use the CLI helper for `/v1/proxy` requests.
-- If approval times out, return `request_id` and tell the user exactly what to approve in Telegram (they open the Review & approve link and confirm with their passkey).
+- If approval times out, return `request_id` and tell the user exactly what to approve (they get a push notification, or open the app's Requests tab, and confirm with their passkey).
 - If execute fails with `credential_unavailable`, the approval key is missing or expired: create a new request and ask the user to approve again.
 
 ## CLI for Proxy Requests
@@ -130,10 +127,10 @@ IMAP email access (`/v1/email`) is session-gated and strictly read-only.
 
 Flow:
 
-1. Confirm the user has connected email (`/connect imap` in Telegram opens a broker-hosted
+1. Confirm the user has connected email (app → Accounts → imap opens a broker-hosted
    form; the IMAP server is auto-detected from their address).
 2. Create a session: `POST /v1/email/sessions` with `{ "consent_hint": "..." }`.
-3. Poll the Telegram approval: `GET /v1/email/sessions/:id`.
+3. Poll until the user approves in the app: `GET /v1/email/sessions/:id`.
 4. Once `APPROVED`/`ACTIVE`, run read-only operations within the session window:
 
 ```bash

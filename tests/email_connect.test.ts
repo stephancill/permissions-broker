@@ -56,7 +56,7 @@ test("imap connect form requires an enrolled passkey", async () => {
   const userId = await insertUser(998);
   const res = await imapFormFor(userId);
   expect(res.status).toBe(409);
-  expect(await res.text()).toContain("/passkey");
+  expect(await res.text()).toContain("Set up a passkey first");
 });
 
 test("imap connect form renders for a valid state", async () => {

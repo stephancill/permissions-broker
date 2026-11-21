@@ -18,47 +18,92 @@ export function scriptJson(value: unknown): string {
 }
 
 const STYLE = `
-  body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; padding: 24px; max-width: 720px; margin: 0 auto; }
-  h1 { font-size: 20px; margin: 0 0 12px; }
-  p, li { color: #333; line-height: 1.4; }
+  :root { color-scheme: light dark; }
+  body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; padding: 16px; padding-top: max(16px, env(safe-area-inset-top)); padding-bottom: max(16px, env(safe-area-inset-bottom)); max-width: 720px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 8px 0 12px; }
+  h2 { font-size: 16px; margin: 20px 0 8px; }
+  p, li { line-height: 1.4; }
+  nav { display: flex; gap: 16px; flex-wrap: wrap; padding-bottom: 8px; border-bottom: 1px solid #8884; }
+  nav a[aria-current] { font-weight: 600; }
   button { display: block; width: 100%; margin-top: 12px; padding: 12px 14px; font-size: 16px; }
+  form.inline { display: inline; }
+  form.inline button { display: inline; width: auto; margin: 4px 8px 4px 0; padding: 6px 10px; font-size: 14px; }
+  input[type=text] { width: 100%; box-sizing: border-box; padding: 10px; font-size: 16px; }
   label { display: block; margin: 8px 0; }
-  pre { background: #f3f3f3; padding: 8px; white-space: pre-wrap; word-break: break-all; }
-  code { background: #f3f3f3; padding: 2px 4px; }
-  .note { font-size: 13px; color: #444; }
-  .error { color: #a00; }
-  .ok { color: #060; }
+  ul.list { list-style: none; padding: 0; margin: 0; }
+  ul.list > li { padding: 10px 0; border-bottom: 1px solid #8884; }
+  pre { background: #8882; padding: 8px; white-space: pre-wrap; word-break: break-all; }
+  code { background: #8882; padding: 2px 4px; word-break: break-all; }
+  .note { font-size: 13px; opacity: 0.8; }
+  .error { color: #c00; }
+  .ok { color: #080; }
   [hidden] { display: none; }
 `;
 
-// Pages that touch key material: inline-only scripts gated by a per-response
-// nonce, no third-party origins, same-origin fetches only.
-export function sendKeyPage(
+const NAV_ITEMS = [
+  ["/app", "Requests"],
+  ["/app/keys", "API keys"],
+  ["/app/accounts", "Accounts"],
+  ["/app/settings", "Settings"],
+] as const;
+
+export type NavItem = (typeof NAV_ITEMS)[number][0];
+
+function renderNav(current: NavItem | undefined): string {
+  return `<nav>${NAV_ITEMS.map(
+    ([href, label]) =>
+      `<a href="${href}"${href === current ? ' aria-current="page"' : ""}>${label}</a>`
+  ).join("")}</nav>`;
+}
+
+// Every page is part of the installable PWA. Pages touching key material use
+// inline-only scripts gated by a per-response nonce, no third-party origins,
+// and same-origin fetches/forms only.
+export function sendPage(
   c: Context,
-  params: { title: string; body: string; script?: string; status?: number }
+  params: {
+    title: string;
+    body: string;
+    script?: string;
+    // Include the passkey/crypto helpers (window.PB).
+    crypto?: boolean;
+    nav?: NavItem | null;
+    status?: number;
+  }
 ): Response {
   const nonce = randomBase64Url(16);
   c.header(
     "Content-Security-Policy",
-    `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`
+    `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; connect-src 'self'; img-src 'self'; manifest-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'`
   );
-  c.header("Referrer-Policy", "no-referrer");
+  // same-origin (not no-referrer) so form POSTs carry our Origin, which the
+  // session middleware checks; nothing leaks to other origins.
+  c.header("Referrer-Policy", "same-origin");
   c.header("Cache-Control", "no-store");
 
-  const scripts = params.script
-    ? `<script nonce="${nonce}">${CLIENT_CRYPTO_JS}</script>
-    <script nonce="${nonce}">${params.script}</script>`
-    : "";
+  const scripts = [params.crypto ? CLIENT_CRYPTO_JS : "", params.script ?? ""]
+    .filter(Boolean)
+    .map((s) => `<script nonce="${nonce}">${s}</script>`)
+    .join("\n    ");
+
+  const nav = params.nav === null ? "" : renderNav(params.nav);
 
   const html = `<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Permissions" />
+    <meta name="theme-color" content="#ffffff" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/favicon.png" type="image/png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <title>${escapeHtml(params.title)}</title>
     <style nonce="${nonce}">${STYLE}</style>
   </head>
   <body>
+    ${nav}
     ${params.body}
     ${scripts}
   </body>
@@ -69,33 +114,33 @@ export function sendKeyPage(
 
 export function sendMessagePage(
   c: Context,
-  params: { title: string; message: string; status?: number }
+  params: {
+    title: string;
+    message: string;
+    status?: number;
+    nav?: NavItem | null;
+  }
 ): Response {
-  return sendKeyPage(c, {
+  return sendPage(c, {
     title: params.title,
     status: params.status,
-    body: `<h1>${escapeHtml(params.title)}</h1><p>${escapeHtml(params.message)}</p>`,
+    nav: params.nav,
+    body: `<h1>${escapeHtml(params.title)}</h1><p>${escapeHtml(params.message)}</p><p><a href="/app">Back to the app</a></p>`,
   });
 }
 
-// Shown in place of passkey UI inside Telegram's in-app browser.
-export const TELEGRAM_WEBVIEW_NOTICE = `
-  <div id="tg-webview" hidden>
-    <p class="error"><b>Open this page in Safari.</b> Telegram's in-app browser can't use passkeys.</p>
-    <p>Tap <b>⋯</b> → <b>Open in Safari</b>, or copy the link:</p>
-    <button id="copy-link" type="button">Copy link</button>
-  </div>`;
-
-export const TELEGRAM_WEBVIEW_SCRIPT = `
-  function guardTelegramWebview(mainId) {
-    if (!PB.isTelegramWebview()) return false;
-    document.getElementById("tg-webview").hidden = false;
-    document.getElementById(mainId).hidden = true;
-    document.getElementById("copy-link").onclick = function () {
-      navigator.clipboard.writeText(location.href).then(function () {
-        document.getElementById("copy-link").textContent = "Copied";
-      });
-    };
-    return true;
+// Shared browser helper for JSON POSTs from our pages.
+export const POST_JSON_SCRIPT = `
+  async function postJson(path, body) {
+    var res = await fetch(path, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify(body || {}),
+    });
+    var json = await res.json().catch(function () { return {}; });
+    if (!res.ok) throw new Error(json.message || json.error || ("HTTP " + res.status));
+    return json;
   }
+  function errorText(e) { return e && e.message ? e.message : String(e); }
 `;

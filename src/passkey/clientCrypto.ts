@@ -131,11 +131,6 @@ export const CLIENT_CRYPTO_JS = String.raw`
     };
   }
 
-  // Telegram's in-app browser on iOS is a webview without passkey access.
-  function isTelegramWebview() {
-    return typeof root.TelegramWebviewProxy !== "undefined";
-  }
-
   root.PB = {
     b64u: b64u,
     unb64u: unb64u,
@@ -147,7 +142,6 @@ export const CLIENT_CRYPTO_JS = String.raw`
     prfFirst: prfFirst,
     registrationToJSON: registrationToJSON,
     assertionToJSON: assertionToJSON,
-    isTelegramWebview: isTelegramWebview,
   };
 })(typeof window !== "undefined" ? window : globalThis);
 `;

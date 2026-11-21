@@ -19,7 +19,6 @@ await migrate();
 
 async function setupDb() {
   const database = await db();
-  await database.exec("DELETE FROM approvals;");
   await database.exec("DELETE FROM proxy_requests;");
   await database.exec("DELETE FROM approval_windows;");
   await database.exec("DELETE FROM linked_accounts;");

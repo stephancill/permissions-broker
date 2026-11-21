@@ -141,7 +141,7 @@ async function encryptForAccount(params: {
   if (!publicKey) {
     throw new CredentialError(
       "NOT_ENROLLED",
-      "No passkey enrolled. Use /passkey in Telegram first."
+      "No passkey enrolled. Sign in to the Permissions Broker app to set one up."
     );
   }
   return encryptCredential({

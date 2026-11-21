@@ -16,7 +16,6 @@ function nowIso(): string {
 async function setupDb() {
   // Ensure clean slate for this test file.
   const database = await db();
-  await database.exec("DELETE FROM approvals;");
   await database.exec("DELETE FROM proxy_requests;");
   await database.exec("DELETE FROM linked_accounts;");
   await database.exec("DELETE FROM api_keys;");

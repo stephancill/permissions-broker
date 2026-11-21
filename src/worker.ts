@@ -2,7 +2,6 @@ import { createApp } from "./app";
 import { type D1DatabaseLike, setD1Database } from "./db/client";
 import { configureEnv } from "./env";
 import { sweepExpiredState } from "./proxy/sweeper";
-import { ensureTelegramBotCommandsRegistered } from "./telegram/commands";
 
 type WorkerEnv = Record<string, unknown> & {
   DB: D1DatabaseLike;
@@ -17,7 +16,7 @@ type ScheduledEvent = {
   scheduledTime: number;
 };
 
-const app = createApp({ includeGit: true, includeTelegramWebhook: true });
+const app = createApp({ includeGit: true });
 
 function configureWorker(env: WorkerEnv): void {
   setD1Database(env.DB);
@@ -31,8 +30,6 @@ export default {
   },
   scheduled(_event: ScheduledEvent, env: WorkerEnv, ctx: ExecutionContext) {
     configureWorker(env);
-    ctx.waitUntil(
-      Promise.all([sweepExpiredState(), ensureTelegramBotCommandsRegistered()])
-    );
+    ctx.waitUntil(sweepExpiredState());
   },
 };

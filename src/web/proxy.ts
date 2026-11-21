@@ -13,7 +13,7 @@ import {
 import { db } from "../db/client";
 import { env } from "../env";
 import { OAuthTokenRefreshError } from "../oauth/flow";
-import { approvalUrl } from "../passkey/webauthn";
+import { approvalPath } from "../passkey/webauthn";
 import { findActiveApprovalWindow } from "../proxy/approvalWindows";
 import { interpretProxyRequest } from "../proxy/interpret";
 import type { ProxyProvider } from "../proxy/provider";
@@ -22,8 +22,7 @@ import { readBodyWithLimit } from "../proxy/readLimit";
 import { createProxyRequest } from "../proxy/requests";
 import { decodeBodyForInterpret, truncate } from "../proxy/summary";
 import { validateUpstreamUrl } from "../proxy/url";
-import { telegramApi } from "../telegram/api";
-import { sendApprovalMessage } from "../telegram/approvalMessages";
+import { notifyUser } from "../push/notify";
 
 const CreateProxyRequestSchema = z.object({
   upstream_url: z.string().min(1),
@@ -134,15 +133,6 @@ function encodeRequestBodyBase64(params: {
   };
 }
 
-function escapeHtml(s: string): string {
-  return s
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
-}
-
 function getRequesterIp(c: Context): string | null {
   const xff = c.req.header("x-forwarded-for");
   if (xff) {
@@ -201,44 +191,6 @@ async function fetchWithAllowedRedirects(params: {
   }
 
   throw new Error("too many redirects");
-}
-
-function formatQueryForTelegram(url: URL): string {
-  if (!url.search) return "";
-
-  const pairs = [...url.searchParams.entries()];
-  if (pairs.length === 0) return "";
-
-  // Drop noisy/default params. If nothing meaningful remains, omit the query block.
-  const dropKeys = new Set([
-    "fields",
-    "pagesize",
-    "prettyprint",
-    "alt",
-    "key",
-    "quotauser",
-  ]);
-
-  const filtered = pairs.filter(([k, v]) => {
-    const kk = k.toLowerCase();
-    if (dropKeys.has(kk)) return false;
-    if (kk === "q") {
-      const norm = v.replace(/\s+/g, "").toLowerCase();
-      if (norm === "trashed=false") return false;
-    }
-    return true;
-  });
-
-  if (filtered.length === 0) return "";
-
-  filtered.sort((a, b) =>
-    a[0] === b[0] ? a[1].localeCompare(b[1]) : a[0].localeCompare(b[0])
-  );
-
-  const lines = filtered.map(([k, v]) => `${k}=${truncate(v, 200)}`);
-
-  const rendered = truncate(lines.join("\n"), 600);
-  return `<b>Query</b>:\n<pre>${escapeHtml(rendered)}</pre>`;
 }
 
 export const proxyRouter = new Hono();
@@ -831,42 +783,23 @@ proxyRouter.post("/request", requireApiKey, async (c) => {
     });
   }
 
-  const u = (await database
-    .query("SELECT telegram_user_id FROM users WHERE id = ?;")
-    .get(auth.userId)) as { telegram_user_id: number } | null;
+  if (created.isNew) {
+    const url = new URL(created.canonicalUpstreamUrl);
+    const where = `${methodNorm} ${url.hostname}${url.pathname}`;
 
-  if (created.isNew && u?.telegram_user_id && env.TELEGRAM_BOT_TOKEN) {
-    // Inform the user that the request was auto-approved via an approval window.
     if (autoApproved && approvalWindow) {
-      const url = new URL(created.canonicalUpstreamUrl);
-      const text = [
-        "<b>Permission request</b>",
-        "",
-        "Decision: <code>AUTO-APPROVED</code>",
-        `Reason: approval window for ${approvalWindow.scope === "provider" ? `all <code>${escapeHtml(provider.id)}</code> requests` : "this endpoint"} (until <code>${escapeHtml(approvalWindow.expiresAt)}</code>)`,
-        "",
-        `<b>API key</b>: <code>${escapeHtml(auth.apiKeyLabel)}</code>`,
-        `<b>Request</b>: <code>${escapeHtml(`${methodNorm} ${url.hostname}${url.pathname}`)}</code>`,
-      ].join("\n");
-
-      await telegramApi()
-        .sendMessage(u.telegram_user_id, text, { parse_mode: "HTML" })
-        .catch(() => {});
-    }
-
-    // If still pending, ask for explicit approval.
-    if (created.status !== "PENDING_APPROVAL") {
-      return c.json({
-        request_id: created.requestId,
-        status: created.status,
-        approval_expires_at: created.approvalExpiresAt,
+      await notifyUser({
+        userId: auth.userId,
+        notification: {
+          title: `Auto-approved: ${auth.apiKeyLabel}`,
+          body: `${where}\nApproval window for ${approvalWindow.scope === "provider" ? `all ${provider.id} requests` : "this endpoint"} until ${approvalWindow.expiresAt.slice(11, 16)} UTC`,
+          url: "/app",
+          tag: `proxy:${created.requestId}`,
+        },
+        ttlSeconds: 300,
+        urgency: "low",
       });
-    }
-
-    {
-      const url = new URL(created.canonicalUpstreamUrl);
-      const hashPrefix = created.requestHash.slice(0, 12);
-
+    } else if (created.status === "PENDING_APPROVAL") {
       const interpreted = interpretProxyRequest({
         url,
         method: methodNorm,
@@ -874,62 +807,23 @@ proxyRouter.post("/request", requireApiKey, async (c) => {
         bodyJson: decodedForInterpret.bodyJson,
         bodyText: decodedForInterpret.bodyText,
       });
-
-      const detailsForTelegram = interpreted.details;
-
-      const queryLine =
-        detailsForTelegram.length === 0 ? formatQueryForTelegram(url) : "";
-
-      const requesterNote = consentHint
-        ? `<b>Requester note</b>: ${escapeHtml(truncate(consentHint, 300))}`
-        : "";
-
-      const detailsBlock = detailsForTelegram.length
-        ? [
-            "<b>Details</b>",
-            ...detailsForTelegram.map((d) => `- ${escapeHtml(d)}`),
-          ].join("\n")
-        : "";
-
-      const text = [
-        "<b>Permission request</b>",
-        "",
-        `<b>API key</b>: <code>${escapeHtml(auth.apiKeyLabel)}</code>`,
-        `<b>Action</b>: ${escapeHtml(interpreted.summary)}`,
-        detailsBlock,
-        "",
-        `<b>Request</b>: <code>${escapeHtml(`${methodNorm} ${url.hostname}${url.pathname}`)}</code>`,
-        queryLine,
-        decodedForInterpret.bodySummary != null &&
-        detailsForTelegram.length === 0
-          ? `<b>Body</b>: <pre>${escapeHtml(truncate(decodedForInterpret.bodySummary, 500))}</pre>`
-          : "",
-        "",
-        ...(requesterNote ? ["", requesterNote, ""] : []),
-        "Review and approve with your passkey (opens in Safari).",
-        `Hash: <code>${escapeHtml(hashPrefix)}</code>`,
-      ]
-        .filter(Boolean)
-        .join("\n");
-
-      const kb = {
-        inline_keyboard: [
-          [
-            {
-              text: "Review & approve",
-              url: await approvalUrl({ kind: "proxy", id: created.requestId }),
-            },
-            { text: "Deny", callback_data: `r:deny:${created.requestId}` },
-          ],
-        ],
-      };
-
-      await sendApprovalMessage({
-        kind: "proxy",
-        id: created.requestId,
-        chatId: u.telegram_user_id,
-        html: text,
-        replyMarkup: kb,
+      const lines = [interpreted.summary, where];
+      if (consentHint) lines.push(`Note: ${truncate(consentHint, 200)}`);
+      await notifyUser({
+        userId: auth.userId,
+        notification: {
+          title: `${auth.apiKeyLabel} requests access`,
+          body: lines.join("\n"),
+          url: approvalPath({ kind: "proxy", id: created.requestId }),
+          tag: `proxy:${created.requestId}`,
+        },
+        ttlSeconds: Math.max(
+          1,
+          Math.floor(
+            (Date.parse(created.approvalExpiresAt) - Date.now()) / 1000
+          )
+        ),
+        urgency: "high",
       });
     }
   }

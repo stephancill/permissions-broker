@@ -2,7 +2,6 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { ulid } from "ulid";
 
 import { createApp } from "../src/app";
-import { createConnectState } from "../src/connect/state";
 import { saveLinkedCredential } from "../src/credentials/store";
 import { encryptUtf8 } from "../src/crypto/aesgcm";
 import { fromBase64Url, toBase64Url, toBytes } from "../src/crypto/bytes";
@@ -11,7 +10,6 @@ import { db } from "../src/db/client";
 import { migrate } from "../src/db/migrate";
 import { configureEnv, type Env, env } from "../src/env";
 import { CLIENT_CRYPTO_JS } from "../src/passkey/clientCrypto";
-import { approvalLinkToken } from "../src/passkey/webauthn";
 import { createVirtualAuthenticator } from "./helpers/virtualAuthenticator";
 
 type JsonRecord = Record<string, unknown>;
@@ -49,6 +47,7 @@ const GITHUB_TOKEN = "gho_test_token";
 let prevEnv: Env;
 const realFetch = globalThis.fetch;
 const upstreamAuthHeaders: string[] = [];
+const pushes: Array<{ url: string; headers: Headers; body: Uint8Array }> = [];
 
 await migrate();
 
@@ -59,6 +58,8 @@ beforeAll(() => {
     APP_BASE_URL: ORIGIN,
     APP_SECRET: "test-app-secret",
     PB_TEST_BYPASS_OAUTH: false,
+    // Tests create several accounts; the closed default is tested explicitly.
+    ALLOW_SIGNUP: true,
   });
   // Stub the upstream provider; record the injected credential.
   globalThis.fetch = (async (
@@ -68,6 +69,14 @@ beforeAll(() => {
     const url = new URL(
       input instanceof Request ? input.url : input.toString()
     );
+    if (url.hostname === "web.push.apple.com") {
+      pushes.push({
+        url: url.toString(),
+        headers: new Headers(init?.headers),
+        body: new Uint8Array(init?.body as ArrayBuffer),
+      });
+      return new Response(null, { status: 201 });
+    }
     if (url.hostname === "api.github.com") {
       upstreamAuthHeaders.push(
         new Headers(init?.headers).get("authorization") ?? ""
@@ -92,13 +101,40 @@ const authenticator = createVirtualAuthenticator({
   origin: ORIGIN,
 });
 
-async function postJson(path: string, body: unknown, headers = {}) {
+// Session cookie of the most recently signed-up/signed-in account.
+let sessionCookie = "";
+
+function cookieFrom(res: Response): string {
+  const raw = res.headers.get("set-cookie") ?? "";
+  const m = raw.match(/pb_session=([^;]+)/);
+  if (!m) throw new Error("no session cookie");
+  return `pb_session=${m[1]}`;
+}
+
+async function postJson(
+  path: string,
+  body: unknown,
+  headers: Record<string, string> = {}
+) {
   const res = await app.request(path, {
     method: "POST",
-    headers: { "content-type": "application/json", ...headers },
+    headers: {
+      "content-type": "application/json",
+      origin: ORIGIN,
+      cookie: sessionCookie,
+      ...headers,
+    },
     body: JSON.stringify(body),
   });
-  return { status: res.status, json: (await res.json()) as JsonRecord };
+  return {
+    status: res.status,
+    json: (await res.json()) as JsonRecord,
+    res,
+  };
+}
+
+function getPage(path: string, cookie = sessionCookie) {
+  return app.request(path, { headers: { cookie } });
 }
 
 async function resetDb() {
@@ -107,7 +143,9 @@ async function resetDb() {
     "credential_grants",
     "approval_windows",
     "webauthn_challenges",
-    "approvals",
+    "auth_challenges",
+    "web_sessions",
+    "push_subscriptions",
     "proxy_requests",
     "linked_accounts",
     "user_passkeys",
@@ -120,43 +158,27 @@ async function resetDb() {
   }
 }
 
-async function insertUserWithKey(keyPlain: string): Promise<string> {
+async function insertApiKey(userId: string, keyPlain: string) {
   const database = await db();
-  const userId = ulid();
   const now = new Date().toISOString();
-  await database
-    .query(
-      "INSERT INTO users (id, telegram_user_id, created_at, status) VALUES (?, ?, ?, 'active');"
-    )
-    .run(userId, Math.floor(Math.random() * 1e9), now);
   await database
     .query(
       "INSERT INTO api_keys (id, user_id, label, key_hash, created_at, updated_at, revoked_at, last_used_at) VALUES (?, ?, 'agent', ?, ?, ?, NULL, NULL);"
     )
     .run(ulid(), userId, await sha256Hex(keyPlain), now, now);
-  return userId;
 }
 
-type Enrolled = {
+type Account = {
   userId: string;
   credentialId: string;
-  prfSalt: Uint8Array;
+  cookie: string;
 };
 
-async function enroll(userId: string): Promise<Enrolled> {
-  const { state } = await createConnectState({
-    userId,
-    provider: "passkey",
-    ttlMs: 60_000,
-  });
-  const page = await app.request(`/passkey/enroll?state=${state}`);
-  expect(page.status).toBe(200);
-  expect(page.headers.get("content-security-policy")).toContain(
-    "script-src 'nonce-"
-  );
-
-  const o = await postJson("/passkey/enroll/options", { state });
+// What the sign-in page does on "Create account".
+async function signUp(): Promise<Account> {
+  const o = await postJson("/passkey/signup/options", {});
   expect(o.status).toBe(200);
+  const userId = o.json.user_id as string;
   const opts = o.json.registration_options as { challenge: string };
   const prfSalt = fromBase64Url(o.json.prf_salt as string);
 
@@ -166,22 +188,28 @@ async function enroll(userId: string): Promise<Enrolled> {
   const pair = await PB.generateUserKeypair();
   const wrapped = await PB.wrapPrivateKey(kek, pair.privateKey, userId);
 
-  const v = await postJson("/passkey/enroll/verify", {
-    state,
+  const v = await postJson("/passkey/signup/verify", {
     nonce: o.json.nonce,
-    mode: "new",
     registration: created.response,
     public_key: toBase64Url(pair.publicKeyRaw),
     wrapped_private_key: toBase64Url(wrapped),
   });
   expect(v.status).toBe(200);
-  expect(v.json.ok).toBe(true);
+  sessionCookie = cookieFrom(v.res);
+  return {
+    userId,
+    credentialId: created.credential.idB64,
+    cookie: sessionCookie,
+  };
+}
 
-  return { userId, credentialId: created.credential.idB64, prfSalt };
+async function signUpWithKey(keyPlain: string): Promise<string> {
+  const account = await signUp();
+  await insertApiKey(account.userId, keyPlain);
+  return account.userId;
 }
 
 type PageData = {
-  t: string;
   user_id: string;
   passkey: {
     credential_id: string;
@@ -192,9 +220,11 @@ type PageData = {
 };
 
 async function loadApprovalPage(kind: string, id: string): Promise<PageData> {
-  const t = await approvalLinkToken({ kind, id });
-  const res = await app.request(`/approve/${kind}/${id}?t=${t}`);
+  const res = await getPage(`/approve/${kind}/${id}`);
   expect(res.status).toBe(200);
+  expect(res.headers.get("content-security-policy")).toContain(
+    "script-src 'nonce-"
+  );
   const html = await res.text();
   const m = html.match(/var DATA = (.*?);\n/);
   if (!m) throw new Error("approval page data not found");
@@ -211,7 +241,6 @@ async function approveViaPage(params: {
   const data = await loadApprovalPage(params.kind, params.id);
   const base = `/approve/${params.kind}/${params.id}`;
   const ch = await postJson(`${base}/challenge`, {
-    t: data.t,
     options: params.options,
   });
   expect(ch.status).toBe(200);
@@ -220,7 +249,7 @@ async function approveViaPage(params: {
     credentialId: data.passkey.credential_id,
     challenge: ch.json.challenge as string,
   });
-  const body: JsonRecord = { t: data.t, nonce: ch.json.nonce, assertion };
+  const body: JsonRecord = { nonce: ch.json.nonce, assertion };
 
   if (data.credential) {
     const prf = await authenticator.prf(
@@ -286,9 +315,10 @@ async function githubEpk(userId: string): Promise<Uint8Array> {
   return toBytes(epk);
 }
 
-test("enrollment migrates legacy APP_SECRET credentials", async () => {
+test("replacing the passkey keeps the key and migrates legacy credentials", async () => {
   await resetDb();
-  const userId = await insertUserWithKey("pb_flow_a");
+  const account = await signUp();
+  const userId = account.userId;
 
   const database = await db();
   await database
@@ -302,7 +332,45 @@ test("enrollment migrates legacy APP_SECRET credentials", async () => {
       new Date().toISOString()
     );
 
-  await enroll(userId);
+  // What /passkey/enroll does for "Replace passkey (I still have my current one)".
+  const o = await postJson("/passkey/enroll/options", {});
+  expect(o.status).toBe(200);
+  const existing = o.json.existing as {
+    credential_id: string;
+    prf_salt: string;
+    public_key: string;
+    wrapped_private_key: string;
+  };
+  const oldPrf = await authenticator.prf(
+    existing.credential_id,
+    fromBase64Url(existing.prf_salt)
+  );
+  const privateKey = await PB.unwrapPrivateKey(
+    await PB.deriveKek(oldPrf, userId),
+    fromBase64Url(existing.wrapped_private_key),
+    userId,
+    true
+  );
+  const opts = o.json.registration_options as { challenge: string };
+  const created = await authenticator.create({ challenge: opts.challenge });
+  const newPrf = await authenticator.prf(
+    created.credential.idB64,
+    fromBase64Url(o.json.prf_salt as string)
+  );
+  const wrapped = await PB.wrapPrivateKey(
+    await PB.deriveKek(newPrf, userId),
+    privateKey,
+    userId
+  );
+  const v = await postJson("/passkey/enroll/verify", {
+    nonce: o.json.nonce,
+    mode: "rewrap",
+    registration: created.response,
+    public_key: existing.public_key,
+    wrapped_private_key: toBase64Url(wrapped),
+  });
+  expect(v.status).toBe(200);
+  expect(v.json.message).toContain("Re-encrypted 1");
 
   const row = await githubAccountRow(userId);
   expect(row.enc_version).toBe(1);
@@ -311,8 +379,7 @@ test("enrollment migrates legacy APP_SECRET credentials", async () => {
 
 test("proxy request: passkey approval unlocks, executes once, rotates", async () => {
   await resetDb();
-  const userId = await insertUserWithKey("pb_flow_a");
-  await enroll(userId);
+  const userId = await signUpWithKey("pb_flow_a");
   await saveLinkedCredential({
     userId,
     provider: "github",
@@ -356,8 +423,7 @@ test("proxy request: passkey approval unlocks, executes once, rotates", async ()
 
 test("approval challenge is single use and the DEK must match", async () => {
   await resetDb();
-  const userId = await insertUserWithKey("pb_flow_a");
-  await enroll(userId);
+  const userId = await signUpWithKey("pb_flow_a");
   await saveLinkedCredential({
     userId,
     provider: "github",
@@ -391,23 +457,165 @@ test("approval challenge is single use and the DEK must match", async () => {
   expect(replay.json.error).toBe("invalid_challenge");
 });
 
-test("approval page rejects a missing or wrong link token", async () => {
+test("approval pages are scoped to the signed-in owner", async () => {
   await resetDb();
-  const userId = await insertUserWithKey("pb_flow_a");
-  await enroll(userId);
+  const owner = await signUp();
+  await insertApiKey(owner.userId, "pb_flow_a");
+  const created = await createProxyRequest("pb_flow_a");
+  const requestId = created.request_id as string;
+  const path = `/approve/proxy/${requestId}`;
+
+  // Signed out: redirected to sign-in, and the JSON endpoints refuse.
+  const signedOut = await getPage(path, "");
+  expect(signedOut.status).toBe(302);
+  expect(signedOut.headers.get("location")).toBe(
+    `/app/signin?next=${encodeURIComponent(path)}`
+  );
+  const ch = await postJson(
+    `${path}/challenge`,
+    { options: {} },
+    { cookie: "" }
+  );
+  expect(ch.status).toBe(401);
+
+  // Cross-origin writes are refused even with a valid session.
+  const cross = await postJson(
+    `${path}/deny`,
+    {},
+    { origin: "https://evil.example" }
+  );
+  expect(cross.status).toBe(403);
+  const noOrigin = await postJson(
+    `${path}/deny`,
+    {},
+    { origin: "null", "sec-fetch-site": "cross-site" }
+  );
+  expect(noOrigin.status).toBe(403);
+
+  // Another account can't see it.
+  const other = await signUp();
+  expect((await getPage(path, other.cookie)).status).toBe(404);
+  expect((await postJson(`${path}/deny`, {})).status).toBe(404);
+
+  // The owner can.
+  expect((await getPage(path, owner.cookie)).status).toBe(200);
+});
+
+test("deny from the app needs no passkey and is final", async () => {
+  await resetDb();
+  await signUpWithKey("pb_flow_a");
   const created = await createProxyRequest("pb_flow_a");
   const requestId = created.request_id as string;
 
-  expect((await app.request(`/approve/proxy/${requestId}`)).status).toBe(404);
-  expect((await app.request(`/approve/proxy/${requestId}?t=AAAA`)).status).toBe(
-    404
-  );
+  const denied = await postJson(`/approve/proxy/${requestId}/deny`, {});
+  expect(denied.status).toBe(200);
+  const again = await postJson(`/approve/proxy/${requestId}/deny`, {});
+  expect(again.status).toBe(409);
+
+  const status = await app.request(`/v1/proxy/requests/${requestId}`, {
+    headers: { authorization: "Bearer pb_flow_a" },
+  });
+  expect(status.status).toBe(403);
+  expect(((await status.json()) as JsonRecord).error).toBe("denied");
+});
+
+test("sign in with the passkey creates a session; unknown passkeys are refused", async () => {
+  await resetDb();
+  const account = await signUp();
+  sessionCookie = "";
+
+  const o = await postJson("/passkey/signin/options", {});
+  expect(o.status).toBe(200);
+  const assertion = await authenticator.get({
+    credentialId: account.credentialId,
+    challenge: o.json.challenge as string,
+  });
+  const v = await postJson("/passkey/signin/verify", {
+    nonce: o.json.nonce,
+    assertion,
+  });
+  expect(v.status).toBe(200);
+  const cookie = cookieFrom(v.res);
+  expect(v.res.headers.get("set-cookie")).toContain("HttpOnly");
+  expect((await getPage("/app", cookie)).status).toBe(200);
+
+  // Challenge is single use.
+  const replay = await postJson("/passkey/signin/verify", {
+    nonce: o.json.nonce,
+    assertion,
+  });
+  expect(replay.status).toBe(400);
+
+  // A passkey the broker doesn't know.
+  const stranger = await authenticator.create({ challenge: "AAAA" });
+  const o2 = await postJson("/passkey/signin/options", {});
+  const a2 = await authenticator.get({
+    credentialId: stranger.credential.idB64,
+    challenge: o2.json.challenge as string,
+  });
+  const v2 = await postJson("/passkey/signin/verify", {
+    nonce: o2.json.nonce,
+    assertion: a2,
+  });
+  expect(v2.status).toBe(403);
+
+  // Signing out ends the session server-side.
+  const out = await app.request("/passkey/signout", {
+    method: "POST",
+    headers: { origin: ORIGIN, cookie },
+  });
+  expect(out.status).toBe(303);
+  expect((await getPage("/app", cookie)).status).toBe(302);
+});
+
+test("sign-up is only open on an empty broker unless ALLOW_SIGNUP", async () => {
+  await resetDb();
+  const current = env;
+  configureEnv({ ...current, ALLOW_SIGNUP: false });
+  try {
+    // First account bootstraps the broker.
+    await signUp();
+    const closed = await postJson("/passkey/signup/options", {});
+    expect(closed.status).toBe(403);
+    const page = await (await getPage("/app/signin", "")).text();
+    expect(page).not.toContain("Create account");
+  } finally {
+    configureEnv(current);
+  }
+  expect((await postJson("/passkey/signup/options", {})).status).toBe(200);
+});
+
+test("API keys are created in the app and shown once", async () => {
+  await resetDb();
+  const account = await signUp();
+  const res = await app.request("/app/keys", {
+    method: "POST",
+    headers: {
+      origin: ORIGIN,
+      cookie: account.cookie,
+      "content-type": "application/x-www-form-urlencoded",
+    },
+    body: "label=laptop+agent",
+  });
+  expect(res.status).toBe(200);
+  const html = await res.text();
+  const key = html.match(/<pre id="new-key">(pb_[A-Za-z0-9_-]+)<\/pre>/)?.[1];
+  expect(key).toBeDefined();
+
+  const who = await app.request("/v1/whoami", {
+    headers: { authorization: `Bearer ${key}` },
+  });
+  expect(who.status).toBe(200);
+
+  // Listed afterwards without the secret.
+  const list = await (await getPage("/app/keys", account.cookie)).text();
+  expect(list).toContain("laptop agent");
+  expect(list).not.toContain(key as string);
 });
 
 test("approval window auto-approves the endpoint and survives rotation", async () => {
   await resetDb();
-  const userId = await insertUserWithKey("pb_flow_a");
-  await enroll(userId);
+  const userId = await signUpWithKey("pb_flow_a");
   await saveLinkedCredential({
     userId,
     provider: "github",
@@ -443,8 +651,7 @@ test("approval window auto-approves the endpoint and survives rotation", async (
 
 test("provider approval window auto-approves any endpoint for the provider", async () => {
   await resetDb();
-  const userId = await insertUserWithKey("pb_flow_a");
-  await enroll(userId);
+  const userId = await signUpWithKey("pb_flow_a");
   await saveLinkedCredential({
     userId,
     provider: "github",
@@ -454,13 +661,7 @@ test("provider approval window auto-approves any endpoint for the provider", asy
   });
 
   const first = await createProxyRequest("pb_flow_a");
-  const t = await approvalLinkToken({
-    kind: "proxy",
-    id: first.request_id as string,
-  });
-  const page = await app.request(
-    `/approve/proxy/${first.request_id as string}?t=${t}`
-  );
+  const page = await getPage(`/approve/proxy/${first.request_id as string}`);
   const html = await page.text();
   expect(html).toContain("<summary>Advanced</summary>");
   expect(html).toContain("window:provider:15");
@@ -490,7 +691,13 @@ test("provider approval window auto-approves any endpoint for the provider", asy
 
 test("connecting an account requires an enrolled passkey", async () => {
   await resetDb();
-  const userId = await insertUserWithKey("pb_flow_a");
+  const userId = ulid();
+  const database = await db();
+  await database
+    .query(
+      "INSERT INTO users (id, telegram_user_id, created_at, status) VALUES (?, ?, ?, 'active');"
+    )
+    .run(userId, -1, new Date().toISOString());
   await expect(
     saveLinkedCredential({
       userId,
@@ -504,8 +711,7 @@ test("connecting an account requires an enrolled passkey", async () => {
 
 test("account listing uses stored metadata without decrypting", async () => {
   await resetDb();
-  const userId = await insertUserWithKey("pb_flow_a");
-  await enroll(userId);
+  const userId = await signUpWithKey("pb_flow_a");
   await saveLinkedCredential({
     userId,
     provider: "imap",
@@ -528,4 +734,162 @@ test("account listing uses stored metadata without decrypting", async () => {
   };
   expect(j.accounts[0]?.metadata?.imap?.host).toBe("imap.example.com");
   expect(JSON.stringify(j)).not.toContain("secret");
+});
+
+// Device side of RFC 8291: decrypt a single-record aes128gcm push.
+async function decryptPush(params: {
+  body: Uint8Array;
+  uaKeys: CryptoKeyPair;
+  uaPublic: Uint8Array;
+  auth: Uint8Array;
+}): Promise<unknown> {
+  const salt = params.body.subarray(0, 16);
+  const idLen = params.body[20];
+  const asPublic = params.body.subarray(21, 21 + idLen);
+  const ciphertext = params.body.subarray(21 + idLen);
+  const hmac = async (key: Uint8Array, data: Uint8Array) =>
+    new Uint8Array(
+      await crypto.subtle.sign(
+        "HMAC",
+        await crypto.subtle.importKey(
+          "raw",
+          new Uint8Array(key),
+          { name: "HMAC", hash: "SHA-256" },
+          false,
+          ["sign"]
+        ),
+        new Uint8Array(data)
+      )
+    );
+  const hkdf = async (
+    salt: Uint8Array,
+    ikm: Uint8Array,
+    info: Uint8Array,
+    len: number
+  ) =>
+    (await hmac(await hmac(salt, ikm), new Uint8Array([...info, 1]))).subarray(
+      0,
+      len
+    );
+  const enc = new TextEncoder();
+  const ecdh = new Uint8Array(
+    await crypto.subtle.deriveBits(
+      {
+        name: "ECDH",
+        public: await crypto.subtle.importKey(
+          "raw",
+          new Uint8Array(asPublic),
+          { name: "ECDH", namedCurve: "P-256" },
+          false,
+          []
+        ),
+      },
+      params.uaKeys.privateKey,
+      256
+    )
+  );
+  const ikm = await hkdf(
+    params.auth,
+    ecdh,
+    new Uint8Array([
+      ...enc.encode("WebPush: info\0"),
+      ...params.uaPublic,
+      ...asPublic,
+    ]),
+    32
+  );
+  const cek = await hkdf(
+    salt,
+    ikm,
+    enc.encode("Content-Encoding: aes128gcm\0"),
+    16
+  );
+  const nonce = await hkdf(
+    salt,
+    ikm,
+    enc.encode("Content-Encoding: nonce\0"),
+    12
+  );
+  const plain = new Uint8Array(
+    await crypto.subtle.decrypt(
+      { name: "AES-GCM", iv: new Uint8Array(nonce) },
+      await crypto.subtle.importKey(
+        "raw",
+        new Uint8Array(cek),
+        { name: "AES-GCM" },
+        false,
+        ["decrypt"]
+      ),
+      new Uint8Array(ciphertext)
+    )
+  );
+  expect(plain[plain.length - 1]).toBe(2);
+  return JSON.parse(new TextDecoder().decode(plain.subarray(0, -1)));
+}
+
+test("a new request is pushed, encrypted, to the user's devices", async () => {
+  await resetDb();
+  await signUpWithKey("pb_flow_a");
+
+  const vapid = (await crypto.subtle.generateKey(
+    { name: "ECDSA", namedCurve: "P-256" },
+    true,
+    ["sign", "verify"]
+  )) as CryptoKeyPair;
+  const current = env;
+  configureEnv({
+    ...current,
+    VAPID_PUBLIC_KEY: toBase64Url(
+      new Uint8Array(await crypto.subtle.exportKey("raw", vapid.publicKey))
+    ),
+    VAPID_PRIVATE_KEY: (await crypto.subtle.exportKey("jwk", vapid.privateKey))
+      .d as string,
+    VAPID_SUBJECT: "mailto:ops@example.com",
+  });
+
+  try {
+    // The device's push subscription.
+    const uaKeys = (await crypto.subtle.generateKey(
+      { name: "ECDH", namedCurve: "P-256" },
+      true,
+      ["deriveBits"]
+    )) as CryptoKeyPair;
+    const uaPublic = new Uint8Array(
+      await crypto.subtle.exportKey("raw", uaKeys.publicKey)
+    );
+    const auth = crypto.getRandomValues(new Uint8Array(16));
+
+    const rejected = await postJson("/app/push/subscribe", {
+      endpoint: "https://attacker.example/push",
+      keys: { p256dh: toBase64Url(uaPublic), auth: toBase64Url(auth) },
+    });
+    expect(rejected.status).toBe(400);
+
+    const sub = await postJson("/app/push/subscribe", {
+      endpoint: "https://web.push.apple.com/QGuQyavXutnMH",
+      keys: { p256dh: toBase64Url(uaPublic), auth: toBase64Url(auth) },
+    });
+    expect(sub.status).toBe(200);
+
+    pushes.length = 0;
+    const created = await createProxyRequest("pb_flow_a");
+    expect(pushes.length).toBe(1);
+    const push = pushes[0];
+    expect(push.headers.get("content-encoding")).toBe("aes128gcm");
+    expect(push.headers.get("urgency")).toBe("high");
+    expect(push.headers.get("authorization")).toMatch(/^vapid t=/);
+
+    const payload = (await decryptPush({
+      body: push.body,
+      uaKeys,
+      uaPublic,
+      auth,
+    })) as { title: string; body: string; url: string; tag: string };
+    expect(payload.title).toBe("agent requests access");
+    expect(payload.body).toContain("GET api.github.com/user");
+    expect(payload.url).toBe(`/approve/proxy/${created.request_id}`);
+    expect(payload.tag).toBe(`proxy:${created.request_id}`);
+  } finally {
+    configureEnv(current);
+  }
 });

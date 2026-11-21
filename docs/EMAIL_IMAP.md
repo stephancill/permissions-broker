@@ -3,7 +3,7 @@
 The broker can act as an **IMAP client** on a user's behalf: the user connects a generic
 IMAP account (host/port/username/password) once, and agents can then issue **read-only**
 email operations over the broker's HTTP API. Every access is gated behind an explicit
-Telegram approval for a short-lived session.
+passkey approval for a short-lived session.
 
 Because IMAP is a raw TCP/TLS protocol, the broker never hands raw IMAP access to agents.
 Instead, it translates a small set of curated HTTP operations into IMAP, and only ever
@@ -12,10 +12,10 @@ construction.
 
 ## Connect flow
 
-A user links an email account from Telegram:
+A user links an email account from the app:
 
-1. `/connect imap` in Telegram → the bot creates a `connect_state` and replies with a link
-   to the broker-hosted form (`/v1/accounts/connect/imap?state=...`).
+1. App → Accounts → imap → the broker creates a `connect_state` and redirects to
+   the broker-hosted form (`/v1/accounts/connect/imap?state=...`).
 2. The user enters their **email address** and **password / app-specific password**.
 3. The broker **auto-detects the IMAP server** from the email domain:
    - Thunderbird ISPDB autoconfig (`https://autoconfig.thunderbird.net/v1.1/<domain>`),
@@ -32,7 +32,7 @@ A user links an email account from Telegram:
 Email access is session-based (mirrors `/v1/git`):
 
 - `POST /v1/email/sessions` — creates a `PENDING_APPROVAL` session (10 min TTL) and
-  prompts the user in Telegram with a **Review & approve** link (passkey approval) and a **Deny** button.
+  sends the user a push notification linking to the approval page (passkey to approve, **Deny** button).
 - The session is scoped to the exact API key that created it (like `/v1/proxy` and
   `/v1/git`).
 - After approval the session becomes `APPROVED` (then `ACTIVE` on first use). Reads are
@@ -106,7 +106,7 @@ Returns message metadata, flags, and the requested parts.
 
 A bundled harness boots a throwaway plaintext IMAP server (seeded with two sample
 messages) and runs the full read path through the real HTTP handlers, simulating the
-Telegram approval:
+passkey approval:
 
 ```bash
 bun scripts/email_e2e.ts
@@ -122,9 +122,9 @@ bun scripts/imap_test_server.ts   # imap://127.0.0.1:11430 (test@example.com / t
 
 ### Real account end-to-end
 
-1. `bun --env-file .env.local run dev` (requires `TELEGRAM_BOT_TOKEN`, `APP_BASE_URL`,
-   `APP_SECRET` in `.env.local`).
-2. In Telegram: `/connect imap` → open the link → enter email + password (the IMAP
+1. `bun --env-file .env.local run dev` (requires `APP_BASE_URL`,
+   `APP_SECRET` and the `VAPID_*` keys in `.env.local`).
+2. In the app: Accounts → imap → enter email + password (the IMAP
    server is auto-detected and verified; for Gmail/iCloud/Outlook use an app password).
 3. Create and approve a session, then read:
 
@@ -140,7 +140,7 @@ curl -s -X POST -H "Authorization: Bearer $PB_API_KEY" -H 'content-type: applica
   -d '{"mailbox":"INBOX","uid":1,"parts":{"text":true}}' $APP_BASE_URL/v1/email/sessions/$SESSION/read
 ```
 
-Approve the Telegram prompt to see the session move `PENDING_APPROVAL → APPROVED/ACTIVE`
+Approve the request in the app to see the session move `PENDING_APPROVAL → APPROVED/ACTIVE`
 and the read endpoints return mail.
 
 ## Runtime note

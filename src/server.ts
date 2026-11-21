@@ -1,18 +1,12 @@
+import { Hono } from "hono";
+import { serveStatic } from "hono/bun";
+
 import { createApp } from "./app";
 import { migrate } from "./db/migrate";
 import { env } from "./env";
 
 if (env.NODE_ENV !== "test") {
   await migrate();
-}
-
-if (env.TELEGRAM_BOT_TOKEN) {
-  const { createBot } = await import("./telegram/bot");
-  const { startTelegramPoller } = await import("./telegram/poller");
-  const bot = createBot();
-  startTelegramPoller(bot).catch((err) => {
-    console.error("telegram poller failed", err);
-  });
 }
 
 if (env.NODE_ENV !== "test") {
@@ -22,7 +16,10 @@ if (env.NODE_ENV !== "test") {
   });
 }
 
-const app = createApp({ includeGit: true });
+// On Workers, public/ is served by the assets binding (wrangler.toml).
+const app = new Hono();
+app.use("*", serveStatic({ root: "./public" }));
+app.route("/", createApp({ includeGit: true }));
 
 Bun.serve({
   port: env.PORT,

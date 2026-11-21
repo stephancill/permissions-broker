@@ -34,9 +34,22 @@ const EnvSchema = z.object({
     .default(nodeEnvDefault),
   PORT: z.coerce.number().int().positive().default(3000),
   DB_PATH: z.string().min(1).default(dbPathDefault),
-  TELEGRAM_BOT_TOKEN: z.string().min(1).optional(),
   APP_BASE_URL: z.string().min(1).optional(),
   APP_SECRET: z.string().min(1).optional(),
+  // Web Push (VAPID). Generate with `bun scripts/vapid_keys.ts`.
+  VAPID_PUBLIC_KEY: z.string().min(1).optional(),
+  VAPID_PRIVATE_KEY: z.string().min(1).optional(),
+  // mailto: or https: contact for push services (Apple requires one).
+  VAPID_SUBJECT: z.string().min(1).optional(),
+  // Allow anyone to create an account. Without it, sign-up is only open while
+  // the database has no users (first-run bootstrap).
+  ALLOW_SIGNUP: z
+    .union([
+      z.boolean(),
+      z.enum(["true", "false"]).transform((v) => v === "true"),
+    ])
+    .optional()
+    .default(false),
   GOOGLE_OAUTH_CLIENT_ID: z.string().min(1).optional(),
   GOOGLE_OAUTH_CLIENT_SECRET: z.string().min(1).optional(),
   GITHUB_OAUTH_CLIENT_ID: z.string().min(1).optional(),

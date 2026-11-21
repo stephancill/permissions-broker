@@ -1,5 +1,9 @@
 # Permissions Broker - MVP Technical Specification
 
+> **Historical.** Written when the user surface was a Telegram bot. It has since
+> been replaced by a passkey-authenticated PWA with Web Push; see
+> `docs/PWA_PUSH.md`. Telegram references below describe the old design.
+
 Last updated: 2026-02-09
 
 ## Overview

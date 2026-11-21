@@ -1,7 +1,7 @@
-// End-to-end exercise of the read-only email feature without Telegram or a
+// End-to-end exercise of the read-only email feature without push or a
 // real mailbox. Boots the broker against a temp SQLite DB, starts the local
 // plaintext IMAP test server, links the account (simulating a successful
-// connect-form verification), creates a session, simulates Telegram approval,
+// connect-form verification), creates a session, simulates the passkey approval,
 // and runs folders/search/read through the real HTTP handlers — imapflow talks
 // to the local IMAP server over real sockets.
 //
@@ -35,18 +35,17 @@ configureEnv({
   NODE_ENV: "test",
   DB_PATH: tmpDb,
   APP_SECRET: "e2e-app-secret",
-  TELEGRAM_BOT_TOKEN: undefined,
 });
 await migrate();
 
-async function insertUser(telegramUserId = 424242): Promise<string> {
+async function insertUser(legacyUserId = -424242): Promise<string> {
   const id = ulid();
   const database = await db();
   await database
     .query(
       "INSERT INTO users (id, telegram_user_id, created_at, status) VALUES (?, ?, ?, 'active');"
     )
-    .run(id, telegramUserId, nowIso());
+    .run(id, legacyUserId, nowIso());
   return id;
 }
 
@@ -107,7 +106,7 @@ await insertLinkedImapAccount({
 });
 console.log("linked account -> seeded (secure=false, plaintext local IMAP)");
 
-// 1) Create a session (would prompt Telegram; here we auto-approve below).
+// 1) Create a session (would send a push; here we auto-approve below).
 const sessionRes = await app().request("/v1/email/sessions", {
   method: "POST",
   headers: {
@@ -122,9 +121,9 @@ console.log(
 );
 const sessionId = sessionJson.session_id as string;
 
-// 2) Simulate the Telegram Approve button.
+// 2) Simulate the passkey approval.
 await setEmailSessionStatus({ sessionId, userId, status: "APPROVED" });
-console.log("approve       -> simulated Telegram approval (APPROVED)");
+console.log("approve       -> simulated passkey approval (APPROVED)");
 
 const auth = { authorization: `Bearer ${keyPlain}` } as const;
 

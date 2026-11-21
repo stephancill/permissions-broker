@@ -32,7 +32,7 @@ type ImapAccountMetadata = {
 };
 
 const NOT_ENROLLED_MESSAGE =
-  "Set up a passkey first: send /passkey to the Telegram bot, then reconnect.";
+  "Set up a passkey first (sign in to the Permissions Broker app), then reconnect.";
 
 export const accountRouter = new Hono();
 
@@ -82,10 +82,7 @@ function renderCloudflareConnectForm(params: { state: string }): string {
 </html>`;
 }
 
-function renderCloudflareConnectResult(params: {
-  ok: boolean;
-  message: string;
-}): string {
+function renderConnectResult(params: { ok: boolean; message: string }): string {
   const msg = escapeHtml(params.message);
   const title = params.ok ? "Connected" : "Connection failed";
   return `<!doctype html>
@@ -103,7 +100,8 @@ function renderCloudflareConnectResult(params: {
   <body>
     <h1>${escapeHtml(title)}</h1>
     <p>${msg}</p>
-    <p>You can return to Telegram.</p>
+    <p>You can close this page and return to the Permissions Broker app.</p>
+    <p><a href="/app/accounts">Back to accounts</a></p>
   </body>
 </html>`;
 }
@@ -168,7 +166,8 @@ function renderImapConnectResult(params: {
   <body>
     <h1>${escapeHtml(title)}</h1>
     <p>${msg}</p>
-    <p>You can return to Telegram.</p>
+    <p>You can close this page and return to the Permissions Broker app.</p>
+    <p><a href="/app/accounts">Back to accounts</a></p>
   </body>
 </html>`;
 }
@@ -349,22 +348,12 @@ accountRouter.get("/callback/:provider", async (c) => {
     event: { provider: providerId, scopes },
   });
 
-  const telegram = (await database
-    .query("SELECT telegram_user_id FROM users WHERE id = ?;")
-    .get(userId)) as { telegram_user_id: number } | null;
-
-  if (telegram?.telegram_user_id && env.TELEGRAM_BOT_TOKEN) {
-    const { createBot } = await import("../telegram/bot");
-    const bot = createBot();
-    await bot.api
-      .sendMessage(
-        telegram.telegram_user_id,
-        `Connected ${providerId}. Scopes: ${scopes}`
-      )
-      .catch(() => {});
-  }
-
-  return c.text("Connected. You can return to Telegram.");
+  return c.html(
+    renderConnectResult({
+      ok: true,
+      message: `Connected ${providerId}.`,
+    })
+  );
 });
 
 // Cloudflare API token connect (broker-hosted form; non-OAuth)
@@ -376,7 +365,7 @@ accountRouter.get("/connect/cloudflare", async (c) => {
     const { userId } = await getConnectState({ state, provider: "cloudflare" });
     if (!(await isEnrolled(userId))) {
       return c.html(
-        renderCloudflareConnectResult({
+        renderConnectResult({
           ok: false,
           message: NOT_ENROLLED_MESSAGE,
         }),
@@ -385,10 +374,7 @@ accountRouter.get("/connect/cloudflare", async (c) => {
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    return c.html(
-      renderCloudflareConnectResult({ ok: false, message: msg }),
-      400
-    );
+    return c.html(renderConnectResult({ ok: false, message: msg }), 400);
   }
 
   return c.html(renderCloudflareConnectForm({ state }));
@@ -409,7 +395,7 @@ accountRouter.post("/connect/cloudflare", async (c) => {
 
   if (!state || !apiToken) {
     return c.html(
-      renderCloudflareConnectResult({ ok: false, message: "missing fields" }),
+      renderConnectResult({ ok: false, message: "missing fields" }),
       400
     );
   }
@@ -419,10 +405,7 @@ accountRouter.post("/connect/cloudflare", async (c) => {
     ({ userId } = await getConnectState({ state, provider: "cloudflare" }));
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    return c.html(
-      renderCloudflareConnectResult({ ok: false, message: msg }),
-      400
-    );
+    return c.html(renderConnectResult({ ok: false, message: msg }), 400);
   }
 
   try {
@@ -453,7 +436,6 @@ accountRouter.post("/connect/cloudflare", async (c) => {
       plaintext: JSON.stringify({ apiToken, accounts }),
     });
 
-    const database = await db();
     await markConnectStateUsed(state);
 
     await auditEvent({
@@ -464,29 +446,15 @@ accountRouter.post("/connect/cloudflare", async (c) => {
       event: { provider: "cloudflare", scopes },
     });
 
-    const telegram = (await database
-      .query("SELECT telegram_user_id FROM users WHERE id = ?;")
-      .get(userId)) as { telegram_user_id: number } | null;
-    if (telegram?.telegram_user_id && env.TELEGRAM_BOT_TOKEN) {
-      const { createBot } = await import("../telegram/bot");
-      const bot = createBot();
-      await bot.api
-        .sendMessage(telegram.telegram_user_id, "Connected cloudflare.")
-        .catch(() => {});
-    }
-
     return c.html(
-      renderCloudflareConnectResult({
+      renderConnectResult({
         ok: true,
         message: "Cloudflare connected.",
       })
     );
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    return c.html(
-      renderCloudflareConnectResult({ ok: false, message: msg }),
-      400
-    );
+    return c.html(renderConnectResult({ ok: false, message: msg }), 400);
   }
 });
 
@@ -579,7 +547,6 @@ accountRouter.post("/connect/imap", async (c) => {
       }),
     });
 
-    const database = await db();
     await markConnectStateUsed(state);
 
     await auditEvent({
@@ -590,24 +557,10 @@ accountRouter.post("/connect/imap", async (c) => {
       event: { provider: "imap", scopes: "read" },
     });
 
-    const telegram = (await database
-      .query("SELECT telegram_user_id FROM users WHERE id = ?;")
-      .get(userId)) as { telegram_user_id: number } | null;
-    if (telegram?.telegram_user_id && env.TELEGRAM_BOT_TOKEN) {
-      const { createBot } = await import("../telegram/bot");
-      const bot = createBot();
-      await bot.api
-        .sendMessage(
-          telegram.telegram_user_id,
-          `Connected imap (${endpoint.host}).`
-        )
-        .catch(() => {});
-    }
-
     return c.html(
       renderImapConnectResult({
         ok: true,
-        message: `Email connected (${endpoint.host}). Return to Telegram.`,
+        message: `Email connected (${endpoint.host}).`,
       })
     );
   } catch (err) {

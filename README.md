@@ -1,9 +1,9 @@
 # permissions-broker
 
-Telegram-controlled permissions gate + proxy API for third-party providers.
+Passkey-controlled permissions gate + proxy API for third-party providers, with an installable PWA for approvals.
 
 - Agent/app calls a single proxy API using a user-issued API key.
-- Every request pauses and prompts the user in Telegram; approving opens a page where the user confirms with their passkey (Face ID / Touch ID).
+- Every request pauses and sends a push notification to the user's PWA (add it to the iPhone home screen); tapping it opens the request, which the user approves with their passkey (Face ID / Touch ID) or denies.
 - On approval, the agent can execute the upstream API request and the broker returns the upstream response.
 - Linked credentials are encrypted to a key only the user's passkey can unlock; the server cannot decrypt them without an approval. See `docs/PASSKEY_CREDENTIAL_ENCRYPTION.md`.
 
@@ -27,12 +27,12 @@ When self-hosting, update the skill definition to point to your own broker insta
 
 1. Deploy to any host that can run Bun (VPS, Railway, Render, Fly.io, etc.)
 
-2. Create a Telegram bot via @BotFather (https://t.me/BotFather):
-   - Send /newbot and follow prompts
-   - Copy the bot token
+2. Generate Web Push (VAPID) keys: `bun scripts/vapid_keys.ts`
 
 3. Configure environment:
-   - TELEGRAM_BOT_TOKEN: Your bot token from step 2
+   - VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY: from step 2 (rotating them invalidates every device's push subscription)
+   - VAPID_SUBJECT: `mailto:` or `https:` contact for push services (Apple requires it)
+   - ALLOW_SIGNUP: `true` to let anyone create an account; otherwise sign-up is only open while the broker has no users
    - APP_BASE_URL: Publicly reachable https URL (e.g. https://your-host.com). It is also the passkey (WebAuthn) relying party: changing the domain invalidates enrolled passkeys.
    - APP_SECRET: Generate a random secret (openssl rand -base64 32)
    - Provider OAuth credentials (optional, for providers you want to support):
@@ -48,11 +48,11 @@ When self-hosting, update the skill definition to point to your own broker insta
    bun run migrate
    bun run start
 
-6. Open your bot in Telegram and run /start to link your account
+6. Open `$APP_BASE_URL/app` in Safari on your iPhone, tap Share → Add to Home Screen, open the app from the home screen, create your account (passkey) and enable notifications.
 
 ### Cloudflare Workers + D1
 
-The broker can also run on Cloudflare Workers with D1. This path uses Telegram webhooks and cron triggers instead of long polling and in-process sweepers.
+The broker can also run on Cloudflare Workers with D1. This path uses cron triggers instead of in-process sweepers, and serves the PWA icons from `public/` via the assets binding.
 
 Note: `/v1/git/*` is mounted on the Worker, but large clone/push operations should be validated against Cloudflare Worker body/time limits before relying on it for heavy repositories.
 
@@ -63,7 +63,7 @@ Key points:
 - Preserve `APP_SECRET` exactly when importing existing data; legacy linked-account credentials (not yet migrated by a passkey enrollment) depend on it.
 - Import the Railway SQLite database into D1 before cutover.
 - Keep `APP_BASE_URL` on the same production domain when possible.
-- Register Telegram webhook at `$APP_BASE_URL/telegram/webhook` after Worker deploy.
+- Set `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY` (secret) and `VAPID_SUBJECT` on the Worker.
 
 Deploys: the `permissions-broker` Worker is connected to this repo with Cloudflare Workers Builds. Every push to `main` runs `bun run typecheck && bun test` from the repo root, then `bunx wrangler deploy`. D1 migrations are not applied by the build: run `bunx wrangler d1 migrations apply permissions-broker --remote` before pushing a change that needs them.
 
@@ -76,9 +76,9 @@ Deploys: the `permissions-broker` Worker is connected to this repo with Cloudfla
 2. Configure env
 
 - Copy `.env.example` to `.env.local` and fill in:
-  - `TELEGRAM_BOT_TOKEN`
-  - `APP_BASE_URL` (must be reachable by Google OAuth; use ngrok/cloudflared for local dev)
-  - `APP_SECRET` (random secret used to encrypt short-lived approval keys and session secrets, and legacy credentials until users enroll a passkey)
+  - `VAPID_PUBLIC_KEY` + `VAPID_PRIVATE_KEY` + `VAPID_SUBJECT` (`bun scripts/vapid_keys.ts`)
+  - `APP_BASE_URL` (must be reachable by Google OAuth; use ngrok/cloudflared for local dev. Passkeys work on `http://localhost`; push on iOS needs the real https domain)
+  - `APP_SECRET` (random secret used to encrypt short-lived approval keys and git session secrets, and legacy credentials until users enroll a passkey)
   - `GOOGLE_OAUTH_CLIENT_ID` + `GOOGLE_OAUTH_CLIENT_SECRET`
   - `GITHUB_OAUTH_CLIENT_ID` + `GITHUB_OAUTH_CLIENT_SECRET`
   - `SPOTIFY_OAUTH_CLIENT_ID` + `SPOTIFY_OAUTH_CLIENT_SECRET`
@@ -95,22 +95,17 @@ Health check
 
 - `GET http://localhost:3000/healthz`
 
-## Telegram quick test
+## The app
 
-In Telegram (to your bot):
+Everything the user does happens in the PWA at `/app` (installable; see `docs/PWA_PUSH.md`):
 
-- `/start`
-- `/passkey` (set up or replace the passkey that encrypts your linked accounts; open the link in Safari, not Telegram's in-app browser)
-- `/key <label>` (or `/key` to be prompted for a label)
-- `/connect` (shows connection status + buttons)
-- `/connect google` (generates Google OAuth link)
-- `/connect github` (generates GitHub OAuth link)
-- `/connect spotify` (generates Spotify OAuth link)
-- `/connect cloudflare` (opens a token form; create a narrow Cloudflare API token first)
-- `/connect imap` (opens an email connect form; IMAP server is auto-detected; read-only, session-gated)
-- `/keys` (rename/revoke/rotate keys)
+- **Sign in** with the passkey (usernameless). The first visit on an empty broker offers **Create account**, which creates the passkey that encrypts linked accounts.
+- **Requests**: pending requests (tap to review) and recent decisions. Approve with the passkey or Deny.
+- **API keys**: create (shown once), rename, rotate, revoke.
+- **Accounts**: connect/disconnect Google, GitHub, Spotify (OAuth), Cloudflare (API token form) and IMAP email (read-only form).
+- **Settings**: enable notifications on this device, list/remove devices, send a test push, replace the passkey, sign out.
 
-Approvals: request messages have a **Review & approve** link (passkey approval page) and a **Deny** button. Proxy requests can be approved once or for 15/60 minutes per endpoint (an approval window, scoped to API key + requester IP + method + host + path). An **Advanced** section (collapsed by default, with a warning) can instead open a 15/60 minute window for every request to the provider from that API key + requester IP.
+Approvals: proxy requests can be approved once or for 15/60 minutes per endpoint (an approval window, scoped to API key + requester IP + method + host + path). An **Advanced** section (collapsed by default, with a warning) can instead open a 15/60 minute window for every request to the provider from that API key + requester IP.
 
 ## Public API
 
@@ -120,7 +115,7 @@ Auth:
 
 Endpoints:
 
-- `POST /v1/proxy/request` (create a request; prompts in Telegram unless an approval window covers it)
+- `POST /v1/proxy/request` (create a request; sends a push unless an approval window covers it)
 - `GET /v1/proxy/requests/:id` (poll status only)
 - `POST /v1/proxy/requests/:id/execute` (execute approved request and return upstream response)
 - `POST /v1/email/sessions` (create a read-only email session; passkey approval required)

@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 
 import { accountRouter } from "./web/accounts";
+import { appRouter, MANIFEST, SERVICE_WORKER_JS } from "./web/app";
 import { approveRouter } from "./web/approve";
 import { emailRouter } from "./web/email";
 import { gitRouter } from "./web/git";
@@ -10,7 +11,6 @@ import { whoamiRouter } from "./web/whoami";
 
 type CreateAppOptions = {
   includeGit?: boolean;
-  includeTelegramWebhook?: boolean;
 };
 
 // Defense-in-depth response headers applied to every reply. The connect forms
@@ -40,20 +40,22 @@ export function createApp(options: CreateAppOptions = {}) {
     }
   });
 
-  app.get("/", (c) => c.text("ok"));
+  app.get("/", (c) => c.redirect("/app", 302));
   app.get("/healthz", (c) => c.json({ ok: true }));
 
-  if (options.includeTelegramWebhook) {
-    app.post("/telegram/webhook", async (c) => {
-      const { createBot } = await import("./telegram/bot");
-      const bot = createBot();
-      await bot.init();
-      await bot.handleUpdate(await c.req.json());
-      return c.json({ ok: true });
-    });
-  }
-
-  // Browser pages for passkey enrollment and approvals.
+  // PWA: installable app shell, passkey sign-in/enrollment and approvals.
+  app.get("/manifest.webmanifest", (c) => {
+    c.header("Content-Type", "application/manifest+json");
+    c.header("Cache-Control", "no-cache");
+    return c.body(JSON.stringify(MANIFEST));
+  });
+  app.get("/sw.js", (c) => {
+    c.header("Content-Type", "text/javascript; charset=utf-8");
+    c.header("Cache-Control", "no-cache");
+    c.header("Content-Security-Policy", "default-src 'self'");
+    return c.body(SERVICE_WORKER_JS);
+  });
+  app.route("/app", appRouter);
   app.route("/passkey", passkeyRouter);
   app.route("/approve", approveRouter);
 

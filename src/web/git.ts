@@ -32,8 +32,8 @@ import {
   streamFromPrefixAndReader,
   withByteLimit,
 } from "../git/stream";
-import { approvalUrl } from "../passkey/webauthn";
-import { sendApprovalMessage } from "../telegram/approvalMessages";
+import { approvalPath } from "../passkey/webauthn";
+import { notifyUser } from "../push/notify";
 
 const CreateSessionSchema = z.object({
   operation: z.enum(["clone", "fetch", "pull", "push"]),
@@ -52,15 +52,6 @@ function nowIso(): string {
 function truncate(s: string, max: number): string {
   if (s.length <= max) return s;
   return `${s.slice(0, max - 1)}…`;
-}
-
-function escapeHtml(s: string): string {
-  return s
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
 }
 
 function parseRepo(repo: string): { owner: string; name: string } {
@@ -207,63 +198,31 @@ gitRouter.post("/sessions", requireApiKey, async (c) => {
     },
   });
 
-  // Telegram prompt
-  const u = (await database
-    .query("SELECT telegram_user_id FROM users WHERE id = ?;")
-    .get(auth.userId)) as { telegram_user_id: number } | null;
-
-  if (u?.telegram_user_id && env.TELEGRAM_BOT_TOKEN) {
+  {
+    const repo = `${owner}/${name}`;
+    const lines = isReadOperation(parsed.data.operation)
+      ? [
+          `git ${parsed.data.operation} github.com/${repo} (read)`,
+          ...(connected
+            ? []
+            : ["No GitHub account linked; only public repos will work."]),
+        ]
+      : [
+          `git push github.com/${repo} (write)`,
+          "Default-branch pushes stay blocked unless you allow them.",
+        ];
     const consentHint = parsed.data.consent_hint;
-    const lines: string[] = [];
-    lines.push("<b>Git session request</b>");
-    lines.push("");
-    lines.push(`<b>API key</b>: <code>${escapeHtml(auth.apiKeyLabel)}</code>`);
-    lines.push(`<b>Provider</b>: <code>github</code>`);
-    lines.push(`<b>Repo</b>: <code>${escapeHtml(`${owner}/${name}`)}</code>`);
-
-    if (isReadOperation(parsed.data.operation)) {
-      const op = parsed.data.operation.toUpperCase();
-      lines.push(`<b>Operation</b>: <code>${escapeHtml(op)}</code> (read)`);
-      if (!connected) {
-        lines.push(
-          "<i>Note:</i> no GitHub account linked; this will only work for public repos."
-        );
-      }
-    } else {
-      lines.push("<b>Operation</b>: <code>PUSH</code> (write)");
-      lines.push(
-        "<i>Safety:</i> default-branch pushes are blocked unless you allow them on the approval page."
-      );
-    }
-
-    if (consentHint) {
-      lines.push("");
-      lines.push(
-        `<b>Requester note</b>: ${escapeHtml(truncate(consentHint, 300))}`
-      );
-      lines.push("");
-    }
-
-    lines.push("Review and approve with your passkey (opens in Safari).");
-
-    const kb = {
-      inline_keyboard: [
-        [
-          {
-            text: "Review & approve",
-            url: await approvalUrl({ kind: "git", id: created.sessionId }),
-          },
-          { text: "Deny", callback_data: `gs:deny:${created.sessionId}` },
-        ],
-      ],
-    };
-
-    await sendApprovalMessage({
-      kind: "git",
-      id: created.sessionId,
-      chatId: u.telegram_user_id,
-      html: lines.join("\n"),
-      replyMarkup: kb,
+    if (consentHint) lines.push(`Note: ${truncate(consentHint, 200)}`);
+    await notifyUser({
+      userId: auth.userId,
+      notification: {
+        title: `${auth.apiKeyLabel} requests git access`,
+        body: lines.join("\n"),
+        url: approvalPath({ kind: "git", id: created.sessionId }),
+        tag: `git:${created.sessionId}`,
+      },
+      ttlSeconds: 300,
+      urgency: "high",
     });
   }
 

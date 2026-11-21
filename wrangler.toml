@@ -8,6 +8,10 @@ routes = [
   { pattern = "permissions-broker.stupidtech.net/*", zone_name = "stupidtech.net" }
 ]
 
+# PWA icons; matched paths are served before the Worker runs.
+[assets]
+directory = "./public"
+
 [triggers]
 crons = ["* * * * *"]
 

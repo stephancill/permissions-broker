@@ -35,7 +35,7 @@ PB options:
   --pb-base-url <url>          Broker base URL (default: https://permissions-broker.stupidtech.net)
   --pb-timeout-seconds <n>     Approval polling timeout in seconds (default: 90)
   --pb-poll-interval <n>       Poll interval in seconds (default: 1)
-  --pb-consent-hint <text>     Consent hint shown in Telegram
+  --pb-consent-hint <text>     Consent hint shown on the approval request
 
 Examples:
   pb_git.py clone https://github.com/OWNER/REPO.git

@@ -20,12 +20,8 @@ import {
   setEmailSessionStatus,
   touchEmailSessionActivity,
 } from "../email/sessions";
-import { env } from "../env";
-import { approvalUrl } from "../passkey/webauthn";
-import {
-  markApprovalMessage,
-  sendApprovalMessage,
-} from "../telegram/approvalMessages";
+import { approvalPath } from "../passkey/webauthn";
+import { notifyUser } from "../push/notify";
 
 const SESSION_TTL_MS = 10 * 60_000;
 const DEFAULT_RESULTS_LIMIT = 50;
@@ -71,15 +67,6 @@ const ReadSchema = z.object({
     .optional(),
 });
 
-function escapeHtml(s: string): string {
-  return s
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
-}
-
 function truncate(s: string, max: number): string {
   if (s.length <= max) return s;
   return `${s.slice(0, max - 1)}…`;
@@ -111,11 +98,6 @@ async function loadAuthorizedSession(
         sessionId,
         userId: auth.userId,
         status: "EXPIRED",
-      });
-      await markApprovalMessage({
-        kind: "email",
-        id: sessionId,
-        decision: "EXPIRED",
       });
       return {
         ok: false,
@@ -230,7 +212,7 @@ function mapImapError(c: Context, err: unknown): Response {
 
 export const emailRouter = new Hono();
 
-// Create an email read session (Telegram approval required).
+// Create an email read session (passkey approval required).
 emailRouter.post("/sessions", requireApiKey, async (c) => {
   const auth = c.get("apiKeyAuth");
   const raw = await c.req.json().catch(() => null);
@@ -261,49 +243,20 @@ emailRouter.post("/sessions", requireApiKey, async (c) => {
     event: {},
   });
 
-  const u = (await database
-    .query("SELECT telegram_user_id FROM users WHERE id = ?;")
-    .get(auth.userId)) as { telegram_user_id: number } | null;
-
-  if (u?.telegram_user_id && env.TELEGRAM_BOT_TOKEN) {
-    const lines: string[] = [];
-    lines.push("<b>Email read session request</b>");
-    lines.push("");
-    lines.push(`<b>API key</b>: <code>${escapeHtml(auth.apiKeyLabel)}</code>`);
-    lines.push(`<b>Provider</b>: <code>imap</code>`);
-    lines.push("<b>Access</b>: <code>READ ONLY</code>");
-    if (consentHint) {
-      lines.push("");
-      lines.push(
-        `<b>Requester note</b>: ${escapeHtml(truncate(consentHint, 300))}`
-      );
-    }
-    lines.push("");
-    lines.push(
-      "Approving lets the agent list folders, search, and read messages until the session goes idle for 10 minutes."
-    );
-    lines.push("Review and approve with your passkey (opens in Safari).");
-
-    const kb = {
-      inline_keyboard: [
-        [
-          {
-            text: "Review & approve",
-            url: await approvalUrl({ kind: "email", id: created.sessionId }),
-          },
-          { text: "Deny", callback_data: `es:deny:${created.sessionId}` },
-        ],
-      ],
-    };
-
-    await sendApprovalMessage({
-      kind: "email",
-      id: created.sessionId,
-      chatId: u.telegram_user_id,
-      html: lines.join("\n"),
-      replyMarkup: kb,
-    });
-  }
+  await notifyUser({
+    userId: auth.userId,
+    notification: {
+      title: `${auth.apiKeyLabel} requests email access`,
+      body: [
+        "Read-only IMAP session: list folders, search and read messages.",
+        ...(consentHint ? [`Note: ${truncate(consentHint, 200)}`] : []),
+      ].join("\n"),
+      url: approvalPath({ kind: "email", id: created.sessionId }),
+      tag: `email:${created.sessionId}`,
+    },
+    ttlSeconds: Math.max(1, Math.floor(SESSION_TTL_MS / 1000)),
+    urgency: "high",
+  });
 
   return c.json({
     session_id: created.sessionId,
@@ -331,11 +284,6 @@ emailRouter.get("/sessions/:id", requireApiKey, async (c) => {
         sessionId,
         userId: auth.userId,
         status: "EXPIRED",
-      });
-      await markApprovalMessage({
-        kind: "email",
-        id: sessionId,
-        decision: "EXPIRED",
       });
       return c.json({ session_id: row.id, status: "EXPIRED" }, 200);
     }
