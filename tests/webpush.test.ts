@@ -109,3 +109,23 @@ test("only browser push services are accepted as endpoints", () => {
     false
   );
 });
+
+test("push topics fit RFC 8030's 32-character limit for every request kind", async () => {
+  const { pushTopic } = await import("../src/push/notify");
+  const ulid = "01M7YZ24X658A2XV6G4MJKBH2R";
+  for (const tag of [
+    `proxy:${ulid}`,
+    `git:${ulid}`,
+    `email:${ulid}`,
+    `release:${ulid}`,
+    `release_policy:${ulid}`,
+    "test",
+  ]) {
+    const topic = await pushTopic(tag);
+    expect(topic).toMatch(/^[A-Za-z0-9_-]{1,32}$/);
+  }
+  expect(await pushTopic(`email:${ulid}`)).toBe(`email_${ulid}`);
+  expect(await pushTopic(`release:${ulid}`)).not.toBe(
+    await pushTopic(`release:${ulid.replace("R", "S")}`)
+  );
+});

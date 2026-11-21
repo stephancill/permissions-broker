@@ -62,7 +62,7 @@ prompts.
   `fcm.googleapis.com`, `updates.push.services.mozilla.com`, `*.notify.windows.com`,
   https, default port) so the broker never POSTs to arbitrary URLs.
 - Payload: `{title, body, url, tag}`. `tag` is `<kind>:<id>`; it also becomes the
-  `Topic` header (non-url-safe chars replaced) so an undelivered push is replaced.
+  `Topic` header (non-url-safe chars replaced; a tag over RFC 8030's 32 characters, such as `release:<id>`, becomes a 32-character hash, since Apple rejects longer topics) so an undelivered push is replaced.
   The approval page closes the device notification with that tag after a decision.
 - TTL: the remaining approval time for proxy requests, 5 minutes for git, the
   session TTL for email. Approval prompts use `Urgency: high`; approval-window

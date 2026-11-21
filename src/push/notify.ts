@@ -1,5 +1,6 @@
 import { ulid } from "ulid";
 import { z } from "zod";
+import { toBase64Url } from "../crypto/bytes";
 
 import { db } from "../db/client";
 import { env } from "../env";
@@ -105,6 +106,18 @@ export async function deletePushSubscription(params: {
   }
 }
 
+// RFC 8030 Topic: at most 32 URL-safe base64 characters, or the push service
+// rejects the push (Apple answers 400). Short tags are used as they are; longer
+// ones (release:<ulid> is 34) become a hash, still one topic per request.
+export async function pushTopic(tag: string): Promise<string> {
+  const safe = tag.replace(/[^A-Za-z0-9_-]/g, "_");
+  if (safe.length <= 32) return safe;
+  const digest = new Uint8Array(
+    await crypto.subtle.digest("SHA-256", new TextEncoder().encode(tag))
+  );
+  return toBase64Url(digest).slice(0, 32);
+}
+
 // Best-effort fan-out to every device of the user. Never throws: the request
 // that triggered it is already persisted and visible in the PWA inbox.
 export async function notifyUser(params: {
@@ -130,6 +143,9 @@ export async function notifyUser(params: {
         params.userId
       );
 
+    const topic = params.notification.tag
+      ? await pushTopic(params.notification.tag)
+      : undefined;
     const payload = {
       ...params.notification,
       body: params.notification.body.slice(0, 1000),
@@ -143,7 +159,7 @@ export async function notifyUser(params: {
             vapid,
             ttlSeconds: params.ttlSeconds,
             urgency: params.urgency,
-            topic: params.notification.tag?.replace(/[^A-Za-z0-9_-]/g, "_"),
+            topic,
           });
           if (res.ok) {
             sent++;
