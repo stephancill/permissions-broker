@@ -85,10 +85,10 @@ function legacyUserIdPlaceholder(): number {
 
 async function registrationOptionsFor(userId: string) {
   return generateRegistrationOptions({
-    rpName: "Permissions Broker",
+    rpName: "stupid vault",
     rpID: expectedRpId(),
-    userName: "Permissions Broker",
-    userDisplayName: "Permissions Broker",
+    userName: "stupid vault",
+    userDisplayName: "stupid vault",
     userID: new TextEncoder().encode(userId),
     attestationType: "none",
     authenticatorSelection: {

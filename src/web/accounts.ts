@@ -32,7 +32,7 @@ type ImapAccountMetadata = {
 };
 
 const NOT_ENROLLED_MESSAGE =
-  "Set up a passkey first (sign in to the Permissions Broker app), then reconnect.";
+  "Set up a passkey first (sign in to the stupid vault app), then reconnect.";
 
 export const accountRouter = new Hono();
 
@@ -100,7 +100,7 @@ function renderConnectResult(params: { ok: boolean; message: string }): string {
   <body>
     <h1>${escapeHtml(title)}</h1>
     <p>${msg}</p>
-    <p>You can close this page and return to the Permissions Broker app.</p>
+    <p>You can close this page and return to the stupid vault app.</p>
     <p><a href="/app/accounts">Back to accounts</a></p>
   </body>
 </html>`;
@@ -166,7 +166,7 @@ function renderImapConnectResult(params: {
   <body>
     <h1>${escapeHtml(title)}</h1>
     <p>${msg}</p>
-    <p>You can close this page and return to the Permissions Broker app.</p>
+    <p>You can close this page and return to the stupid vault app.</p>
     <p><a href="/app/accounts">Back to accounts</a></p>
   </body>
 </html>`;

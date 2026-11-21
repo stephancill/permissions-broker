@@ -1,6 +1,6 @@
 # permissions-broker
 
-Passkey-controlled permissions gate + proxy API for third-party providers, with an installable PWA for approvals.
+Passkey-controlled permissions gate + proxy API for third-party providers, with an installable PWA for approvals called **stupid vault**.
 
 - Agent/app calls a single proxy API using a user-issued API key.
 - Every request pauses and sends a push notification to the user's PWA (add it to the iPhone home screen); tapping it opens the request, which the user approves with their passkey (Face ID / Touch ID) or denies.
@@ -97,7 +97,7 @@ Health check
 
 ## The app
 
-Everything the user does happens in the PWA at `/app` (installable; see `docs/PWA_PUSH.md`):
+Everything the user does happens in the stupid vault PWA at `/app` (installable; see `docs/PWA_PUSH.md`):
 
 - **Sign in** with the passkey (usernameless). The first visit on an empty broker offers **Create account**, which creates the passkey that encrypts linked accounts.
 - **Requests**: pending requests (tap to review) and recent decisions. Approve with the passkey or Deny.

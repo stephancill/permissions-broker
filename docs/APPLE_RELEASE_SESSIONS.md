@@ -81,10 +81,11 @@ A policy row says which workflow may release which apps:
 | `ref` | `refs/heads/main` |
 | `bundle_ids` | JSON array: the app and its extensions |
 
-Policies are created by the user only, through a Telegram command
-(`/release-allow <owner/repo> <bundle id> [<extension bundle id>...]`) confirmed
-on a passkey page. A repository's own `stupid-app.yml` never grants bundle ids.
-Wildcard repositories or bundle ids are not supported.
+Policies are created by the user only, on a **Releases** page in the app (`/app`):
+repository, workflow file, branch and bundle ids, saved with a passkey assertion
+(the session cookie alone is not enough to widen what CI may release). Removing a
+policy needs only the session. A repository's own `stupid-app.yml` never grants
+bundle ids. Wildcard repositories or bundle ids are not supported.
 
 ## Authentication: GitHub OIDC
 
@@ -109,15 +110,18 @@ identity for the generic proxy.
 Modelled on git sessions (`src/git/sessions.ts`).
 
 1. `POST /v1/release/sessions` with `{ bundle_ids, build_number, version }`.
-   `bundle_ids` must be a subset of the policy's. The broker sends a Telegram
-   prompt naming the repository, commit, run URL, bundle ids, version and build
-   number, and returns `{ id }`.
-2. The user approves on `/approve/release/:id` with their passkey. The grant is
+   `bundle_ids` must be a subset of the policy's. The broker sends a Web Push
+   (`Urgency: high`, tag `release:<id>`, TTL the approval time) naming the
+   repository, commit, bundle ids, version and build number, lists the request in
+   the app inbox, and returns `{ id }`.
+2. The user approves on `/approve/release/:id` in the app with their passkey (the
+   page shows the run URL, commit and bundle ids), or denies there. The grant is
    scoped to the session.
 3. `GET /v1/release/sessions/:id` (OIDC token again) polls. Once approved it
    returns the session secret and base URL, once.
-4. At approval the broker resolves the ASC app ids for the approved bundle ids
-   (`GET /v1/apps?filter[bundleId]=...`) and stores them on the session.
+4. At approval the broker resolves the ASC app ids (`GET /v1/apps?filter[bundleId]=`)
+   and bundle id resource ids (`GET /v1/bundleIds?filter[identifier]=`) for the
+   approved bundle ids and stores them on the session.
 5. The runner uses the session endpoints below.
 6. `DELETE /v1/release/session/:id/:secret` closes the session and deletes its
    grant. The sweeper closes sessions at a 45 minute hard cap or after 15 minutes

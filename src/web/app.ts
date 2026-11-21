@@ -57,7 +57,7 @@ appRouter.get("/signin", async (c) => {
 
   const signup = await isSignupAllowed();
   const body = `
-    <h1>Permissions Broker</h1>
+    <h1>stupid vault</h1>
     <p>Sign in with the passkey that protects your linked accounts.</p>
     <button id="signin" type="button">Sign in with passkey</button>
     ${
@@ -671,7 +671,7 @@ appRouter.post("/push/test", requireSessionJson, async (c) => {
   const res = await notifyUser({
     userId,
     notification: {
-      title: "Permissions Broker",
+      title: "stupid vault",
       body: "Test notification. Approval requests will show up like this.",
       url: "/app",
       tag: "test",
@@ -684,8 +684,8 @@ appRouter.post("/push/test", requireSessionJson, async (c) => {
 // --- PWA plumbing ---
 
 export const MANIFEST = {
-  name: "Permissions Broker",
-  short_name: "Permissions",
+  name: "stupid vault",
+  short_name: "stupid vault",
   description: "Approve agent access requests with your passkey.",
   id: "/app",
   start_url: "/app",
@@ -714,7 +714,7 @@ self.addEventListener("push", function (event) {
   var data = {};
   try { data = event.data ? event.data.json() : {}; } catch (e) { data = {}; }
   // iOS revokes push permission if a push doesn't show a notification.
-  event.waitUntil(self.registration.showNotification(data.title || "Permissions Broker", {
+  event.waitUntil(self.registration.showNotification(data.title || "stupid vault", {
     body: data.body || "",
     tag: data.tag || undefined,
     icon: "/icon-192.png",

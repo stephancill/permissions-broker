@@ -1,6 +1,9 @@
 # PWA + Web Push (replaces the Telegram bot)
 
-The user surface is an installable progressive web app at `/app`. It replaces the
+The user surface is an installable progressive web app at `/app`, branded
+**stupid vault** (lowercase; manifest name, home-screen title, sign-in heading,
+passkey RP name). The service, API, domain and agent skill keep the
+`permissions-broker` name: the domain is the passkey RP ID, so it must not change. It replaces the
 Telegram bot that used to handle sign-up, API keys, account linking and approval
 prompts.
 

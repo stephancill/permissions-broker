@@ -141,7 +141,7 @@ async function encryptForAccount(params: {
   if (!publicKey) {
     throw new CredentialError(
       "NOT_ENROLLED",
-      "No passkey enrolled. Sign in to the Permissions Broker app to set one up."
+      "No passkey enrolled. Sign in to the stupid vault app to set one up."
     );
   }
   return encryptCredential({

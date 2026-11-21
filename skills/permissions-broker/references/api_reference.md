@@ -64,7 +64,7 @@ Execute (retrieve upstream bytes)
 
 Approvals
 
-- The user gets a push notification on their installed Permissions Broker app; the approval page requires their passkey to approve, and has a Deny button.
+- The user gets a push notification on their installed stupid vault app; the approval page requires their passkey to approve, and has a Deny button.
 - A user may approve an endpoint for 15/60 minutes. Requests from the same API key and IP to the same method + host + path are then created as `APPROVED` immediately.
 - A user may also (advanced) approve all requests to a provider for 15/60 minutes. Requests from the same API key and IP to any URL routed to that provider are then created as `APPROVED` immediately.
 
@@ -196,7 +196,7 @@ Use short, action-forward phrasing. Do not lead with inability/disclaimer langua
 
 Good:
 
-- "I'll do that via your Permissions Broker. I'll request <upstream_url>, you approve it in the Permissions Broker app, then I'll fetch the result."
+- "I'll do that via your Permissions Broker. I'll request <upstream_url>, you approve it in the stupid vault app, then I'll fetch the result."
 - "To read that Sheet in MVP, I'll export it via Drive as CSV and parse it."
 
 Avoid:

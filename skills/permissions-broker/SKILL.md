@@ -8,7 +8,7 @@ description: Use the Permissions Broker for approval-gated external API access, 
 ## Setup
 
 1. Check for `PB_API_KEY` in local secrets.
-2. If missing, ask the user to create one in the Permissions Broker app
+2. If missing, ask the user to create one in the stupid vault app
    (`<broker>/app/keys` → enter a label → Create API key; it is shown once).
 
 3. Ask whether to store/reuse across sessions.
