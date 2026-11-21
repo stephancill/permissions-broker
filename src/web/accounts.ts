@@ -17,6 +17,10 @@ import { exchangeAuthorizationCode } from "../oauth/flow";
 import type { OAuthProviderConfig } from "../oauth/provider";
 import { getProvider } from "../oauth/registry";
 import { getOauthState, markOauthStateUsed } from "../oauth/state";
+import {
+  fetchCloudflareAccounts,
+  serializeCloudflareOAuthCredential,
+} from "../providers/cloudflare/proxy";
 import { discoverImapSettings } from "../providers/imap/discovery";
 import { registerAppleReleaseConnect } from "./appleReleaseConnect";
 import { escapeHtml, sendPage } from "./pages";
@@ -57,23 +61,6 @@ function connectResultPage(
   });
 }
 
-function cloudflareConnectFormPage(c: Context, state: string): Response {
-  return sendPage(c, {
-    title: "Connect Cloudflare",
-    nav: null,
-    body: `<h1>Connect Cloudflare</h1>
-    <p>The token is encrypted to your passkey; the broker can only use it after you approve a request with your passkey.</p>
-    <p class="note">Create a narrowly scoped token in Cloudflare: <code>My Profile &gt; API Tokens</code>. Wrangler commonly needs account-level Workers, KV, D1, R2, Pages, or Zone permissions depending on the command.</p>
-    <form method="post" action="/v1/accounts/connect/cloudflare">
-      <input type="hidden" name="state" value="${escapeHtml(state)}" />
-      <label>Cloudflare API token <input name="api_token" type="password" autocomplete="off" required /></label>
-      <label>Account ID (optional) <input name="account_id" type="text" autocomplete="off" /></label>
-      <label>Account name (optional) <input name="account_name" type="text" autocomplete="off" /></label>
-      <button type="submit">Connect</button>
-    </form>`,
-  });
-}
-
 function imapConnectFormPage(c: Context, state: string): Response {
   return sendPage(c, {
     title: "Connect email",
@@ -90,58 +77,6 @@ function imapConnectFormPage(c: Context, state: string): Response {
       <button type="submit">Connect</button>
     </form>`,
   });
-}
-
-async function verifyCloudflareToken(apiToken: string): Promise<string> {
-  const res = await fetch(
-    "https://api.cloudflare.com/client/v4/user/tokens/verify",
-    {
-      headers: {
-        authorization: `Bearer ${apiToken}`,
-        accept: "application/json",
-      },
-    }
-  );
-  const body = (await res.json().catch(() => null)) as unknown;
-  if (!res.ok) throw new Error("Cloudflare token verification failed");
-  if (!body || typeof body !== "object" || Array.isArray(body)) {
-    throw new Error("Cloudflare token verification returned invalid JSON");
-  }
-
-  const o = body as Record<string, unknown>;
-  if (o.success !== true)
-    throw new Error("Cloudflare token verification failed");
-  const result = o.result;
-  if (!result || typeof result !== "object" || Array.isArray(result)) {
-    return "unknown";
-  }
-  const id = (result as Record<string, unknown>).id;
-  return typeof id === "string" && id ? id : "unknown";
-}
-
-async function listCloudflareAccounts(
-  apiToken: string
-): Promise<CloudflareAccountMetadata[]> {
-  const res = await fetch("https://api.cloudflare.com/client/v4/accounts", {
-    headers: {
-      authorization: `Bearer ${apiToken}`,
-      accept: "application/json",
-    },
-  });
-  if (!res.ok) return [];
-  const body = (await res.json().catch(() => null)) as unknown;
-  if (!body || typeof body !== "object" || Array.isArray(body)) return [];
-  const result = (body as Record<string, unknown>).result;
-  if (!Array.isArray(result)) return [];
-  return result
-    .map((x) => {
-      if (!x || typeof x !== "object" || Array.isArray(x)) return null;
-      const account = x as Record<string, unknown>;
-      const id = typeof account.id === "string" ? account.id : null;
-      const name = typeof account.name === "string" ? account.name : undefined;
-      return id ? { id, name } : null;
-    })
-    .filter((x) => x != null);
 }
 
 accountRouter.get("/", requireApiKey, async (c) => {
@@ -244,6 +179,24 @@ accountRouter.get("/callback/:provider", async (c) => {
     .get(userId, providerId)) as { id: string } | null;
 
   const tokenToStore = refreshToken ?? accessToken;
+
+  // Cloudflare stores { refreshToken, accounts } so account names can be
+  // shown without decrypting; access tokens are short-lived, so a refresh
+  // token (offline_access) is required.
+  let plaintext = tokenToStore;
+  if (providerId === "cloudflare") {
+    if (!refreshToken) {
+      return connectResultPage(c, {
+        ok: false,
+        message:
+          "Cloudflare did not return a refresh token. Remove the app under Manage OAuth authorizations in Cloudflare and connect again.",
+      });
+    }
+    plaintext = serializeCloudflareOAuthCredential({
+      refreshToken,
+      accounts: accessToken ? await fetchCloudflareAccounts(accessToken) : [],
+    });
+  }
   if (!tokenToStore && !existing) {
     return connectResultPage(c, {
       ok: false,
@@ -252,14 +205,14 @@ accountRouter.get("/callback/:provider", async (c) => {
     });
   }
 
-  if (tokenToStore) {
+  if (plaintext) {
     try {
       await saveLinkedCredential({
         userId,
         provider: providerId,
         providerUserId: "unknown",
         scopes,
-        plaintext: tokenToStore,
+        plaintext,
       });
     } catch (err) {
       if (err instanceof CredentialError && err.code === "NOT_ENROLLED") {
@@ -291,107 +244,6 @@ accountRouter.get("/callback/:provider", async (c) => {
     ok: true,
     message: `Connected ${providerId}.`,
   });
-});
-
-// Cloudflare API token connect (broker-hosted form; non-OAuth)
-accountRouter.get("/connect/cloudflare", async (c) => {
-  const state = c.req.query("state");
-  if (!state) {
-    return connectResultPage(c, { ok: false, message: "Missing state." });
-  }
-
-  try {
-    const { userId } = await getConnectState({ state, provider: "cloudflare" });
-    if (!(await isEnrolled(userId))) {
-      return connectResultPage(c, {
-        ok: false,
-        message: NOT_ENROLLED_MESSAGE,
-        status: 409,
-      });
-    }
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return connectResultPage(c, { ok: false, message: msg, status: 400 });
-  }
-
-  return cloudflareConnectFormPage(c, state);
-});
-
-accountRouter.post("/connect/cloudflare", async (c) => {
-  const body = await c.req.parseBody();
-  const stateRaw = body.state;
-  const apiTokenRaw = body.api_token;
-  const accountIdRaw = body.account_id;
-  const accountNameRaw = body.account_name;
-
-  const state = typeof stateRaw === "string" ? stateRaw.trim() : "";
-  const apiToken = typeof apiTokenRaw === "string" ? apiTokenRaw.trim() : "";
-  const accountId = typeof accountIdRaw === "string" ? accountIdRaw.trim() : "";
-  const accountName =
-    typeof accountNameRaw === "string" ? accountNameRaw.trim() : "";
-
-  if (!state || !apiToken) {
-    return connectResultPage(c, {
-      ok: false,
-      message: "missing fields",
-      status: 400,
-    });
-  }
-
-  let userId: string;
-  try {
-    ({ userId } = await getConnectState({ state, provider: "cloudflare" }));
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return connectResultPage(c, { ok: false, message: msg, status: 400 });
-  }
-
-  try {
-    const tokenId = await verifyCloudflareToken(apiToken);
-    const discoveredAccounts = await listCloudflareAccounts(apiToken);
-    const accountsById = new Map<string, CloudflareAccountMetadata>();
-    for (const account of discoveredAccounts)
-      accountsById.set(account.id, account);
-    if (accountId) {
-      accountsById.set(accountId, {
-        id: accountId,
-        name: accountName || accountsById.get(accountId)?.name,
-      });
-    }
-    const accounts = [...accountsById.values()];
-
-    const providerUserId =
-      tokenId === "unknown" ? await sha256Hex(apiToken) : tokenId;
-    const scopes = accounts.length
-      ? `api_token accounts=${accounts.map((x) => x.id).join(",")}`
-      : "api_token";
-
-    await saveLinkedCredential({
-      userId,
-      provider: "cloudflare",
-      providerUserId,
-      scopes,
-      plaintext: JSON.stringify({ apiToken, accounts }),
-    });
-
-    await markConnectStateUsed(state);
-
-    await auditEvent({
-      userId,
-      actorType: "system",
-      actorId: "connect_cloudflare",
-      eventType: "linked_account_updated",
-      event: { provider: "cloudflare", scopes },
-    });
-
-    return connectResultPage(c, {
-      ok: true,
-      message: "Cloudflare connected.",
-    });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return connectResultPage(c, { ok: false, message: msg, status: 400 });
-  }
 });
 
 // IMAP email connect (broker-hosted form; non-OAuth, read-only)

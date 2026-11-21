@@ -658,15 +658,12 @@ function describeMetadata(metadataJson: string | null): string {
   try {
     const m = JSON.parse(metadataJson) as {
       imap?: { email?: string; host?: string };
-      cloudflare?: { account?: { name?: string; id?: string } };
-      apple_release?: { teamId?: string; distributionCertificateId?: string };
+      cloudflare_accounts?: Array<{ id: string; name?: string }>;
     };
     if (m.imap?.email) return `${m.imap.email} (${m.imap.host ?? "?"})`;
-    if (m.apple_release?.teamId) {
-      return `team ${m.apple_release.teamId}, certificate ${m.apple_release.distributionCertificateId ?? "?"}`;
+    if (m.cloudflare_accounts?.length) {
+      return m.cloudflare_accounts.map((a) => a.name ?? a.id).join(", ");
     }
-    const cf = m.cloudflare?.account;
-    if (cf) return cf.name ?? cf.id ?? "";
   } catch {
     // ignore
   }

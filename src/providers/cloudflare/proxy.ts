@@ -1,13 +1,19 @@
+import { refreshAccessToken } from "../../oauth/flow";
 import type {
   InterpretedRequest,
   ProxyInterpretInput,
 } from "../../proxy/interpret";
 import type { ProxyProvider } from "../../proxy/provider";
+import { cloudflareProvider } from "./oauth";
 
-type CloudflareCredential = {
-  apiToken: string;
-  accounts?: Array<{ id: string; name?: string }>;
-};
+type CloudflareAccount = { id: string; name?: string };
+
+// Stored credential (JSON, encrypted to the user's passkey):
+// - OAuth: { refreshToken, accounts } (rotated on every refresh)
+// - Legacy API token from the removed token form: { apiToken, accounts }
+type CloudflareCredential =
+  | { kind: "oauth"; refreshToken: string; accounts: CloudflareAccount[] }
+  | { kind: "api_token"; apiToken: string; accounts: CloudflareAccount[] };
 
 function safeJsonParse(s: string): unknown {
   try {
@@ -17,27 +23,64 @@ function safeJsonParse(s: string): unknown {
   }
 }
 
+function parseAccounts(v: unknown): CloudflareAccount[] {
+  if (!Array.isArray(v)) return [];
+  return v
+    .map((x) => {
+      if (!x || typeof x !== "object" || Array.isArray(x)) return null;
+      const account = x as Record<string, unknown>;
+      const id = typeof account.id === "string" ? account.id : null;
+      const name = typeof account.name === "string" ? account.name : undefined;
+      return id ? { id, name } : null;
+    })
+    .filter((x) => x != null);
+}
+
 function parseCredential(stored: string): CloudflareCredential | null {
   const j = safeJsonParse(stored);
   if (!j || typeof j !== "object" || Array.isArray(j)) return null;
   const o = j as Record<string, unknown>;
-  const apiToken = typeof o.apiToken === "string" ? o.apiToken : null;
-  if (!apiToken) return null;
+  const accounts = parseAccounts(o.accounts);
+  if (typeof o.refreshToken === "string" && o.refreshToken) {
+    return { kind: "oauth", refreshToken: o.refreshToken, accounts };
+  }
+  if (typeof o.apiToken === "string" && o.apiToken) {
+    return { kind: "api_token", apiToken: o.apiToken, accounts };
+  }
+  return null;
+}
 
-  const accounts = Array.isArray(o.accounts)
-    ? o.accounts
-        .map((x) => {
-          if (!x || typeof x !== "object" || Array.isArray(x)) return null;
-          const account = x as Record<string, unknown>;
-          const id = typeof account.id === "string" ? account.id : null;
-          const name =
-            typeof account.name === "string" ? account.name : undefined;
-          return id ? { id, name } : null;
-        })
-        .filter((x) => x != null)
-    : undefined;
+export function serializeCloudflareOAuthCredential(params: {
+  refreshToken: string;
+  accounts: CloudflareAccount[];
+}): string {
+  return JSON.stringify({
+    refreshToken: params.refreshToken,
+    accounts: params.accounts,
+  });
+}
 
-  return { apiToken, accounts };
+// Accounts the token can access, for display metadata. Best-effort: an
+// empty list just means the account names aren't shown.
+export async function fetchCloudflareAccounts(
+  accessToken: string
+): Promise<CloudflareAccount[]> {
+  try {
+    const res = await fetch(
+      "https://api.cloudflare.com/client/v4/accounts?per_page=50",
+      {
+        headers: {
+          authorization: `Bearer ${accessToken}`,
+          accept: "application/json",
+        },
+      }
+    );
+    if (!res.ok) return [];
+    const j = (await res.json()) as { result?: unknown };
+    return parseAccounts(j.result);
+  } catch {
+    return [];
+  }
 }
 
 function truncate(s: string, max: number): string {
@@ -177,10 +220,27 @@ export const cloudflareProxyProvider: ProxyProvider = {
 
   async getAuthorizationHeaderValue(params: {
     storedCredential: string;
-  }): Promise<{ authorization: string }> {
+  }): Promise<{ authorization: string; updatedCredential?: string }> {
     const cred = parseCredential(params.storedCredential);
     if (!cred) throw new Error("invalid Cloudflare credential");
-    return { authorization: `Bearer ${cred.apiToken}` };
+    if (cred.kind === "api_token") {
+      return { authorization: `Bearer ${cred.apiToken}` };
+    }
+    const token = await refreshAccessToken({
+      provider: cloudflareProvider(),
+      refreshToken: cred.refreshToken,
+    });
+    const rotated = token.refresh_token;
+    return {
+      authorization: `Bearer ${token.access_token}`,
+      updatedCredential:
+        rotated && rotated !== cred.refreshToken
+          ? serializeCloudflareOAuthCredential({
+              refreshToken: rotated,
+              accounts: cred.accounts,
+            })
+          : undefined,
+    };
   },
 
   applyUpstreamRequestHeaderDefaults(params: {

@@ -40,6 +40,7 @@ When self-hosting, update the skill definition to point to your own broker insta
      - Google: Google Cloud Console -> OAuth 2.0
      - GitHub: GitHub Developer Settings -> OAuth Apps
      - Spotify: Spotify Developer Dashboard
+     - Cloudflare: Manage Account > OAuth clients (authorization code + refresh token, `client_secret_post`, redirect `$APP_BASE_URL/v1/accounts/callback/cloudflare`, scopes from `src/providers/cloudflare/oauth.ts`)
 
 4. Set up your database (SQLite recommended for simplicity, or PostgreSQL):
    - SQLite (default): DB_PATH=./data/permissions-broker.sqlite3
@@ -85,6 +86,7 @@ Deploys: the `permissions-broker` Worker is connected to this repo with Cloudfla
   - `GOOGLE_OAUTH_CLIENT_ID` + `GOOGLE_OAUTH_CLIENT_SECRET`
   - `GITHUB_OAUTH_CLIENT_ID` + `GITHUB_OAUTH_CLIENT_SECRET`
   - `SPOTIFY_OAUTH_CLIENT_ID` + `SPOTIFY_OAUTH_CLIENT_SECRET`
+  - `CLOUDFLARE_OAUTH_CLIENT_ID` + `CLOUDFLARE_OAUTH_CLIENT_SECRET` (see `docs/CLOUDFLARE_OAUTH.md`)
 
 3. Run migrations (optional; server runs them on startup)
 
@@ -105,7 +107,7 @@ Everything the user does happens in the stupid vault PWA at `/app` (installable;
 - **Sign in** with the passkey (usernameless). The first visit on an empty broker offers **Create account**, which creates the passkey that encrypts linked accounts.
 - **Requests**: pending requests (tap to review) and recent decisions. Approve with the passkey or Deny.
 - **API keys**: create (shown once), rename, rotate, revoke.
-- **Accounts**: connect/disconnect Google, GitHub, Spotify (OAuth), Cloudflare (API token form) and IMAP email (read-only form).
+- **Accounts**: connect/disconnect Google, GitHub, Spotify and Cloudflare (OAuth) and IMAP email (read-only form).
 - **Settings**: enable notifications on this device, list/remove devices, send a test push, replace the passkey, sign out.
 
 Approvals: proxy requests can be approved once or for 15/60 minutes per endpoint (an approval window, scoped to API key + requester IP + method + host + path). An **Advanced** section (collapsed by default, with a warning) can instead open a 15/60 minute window for every request to the provider from that API key + requester IP.

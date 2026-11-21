@@ -15,7 +15,7 @@ import { createConnectState } from "./state";
 export type ConnectableProvider = ProxyProviderId | "imap" | "apple-release";
 
 // Providers linked through a broker-hosted form instead of OAuth.
-const FORM_PROVIDERS = new Set<string>(["cloudflare", "imap", "apple-release"]);
+const FORM_PROVIDERS = new Set<string>(["imap", "apple-release"]);
 
 export function listConnectableProviders(): ConnectableProvider[] {
   return [...listProxyProviderIds(), "imap", "apple-release"];

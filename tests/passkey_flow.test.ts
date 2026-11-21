@@ -48,6 +48,10 @@ let prevEnv: Env;
 const realFetch = globalThis.fetch;
 const upstreamAuthHeaders: string[] = [];
 const pushes: Array<{ url: string; headers: Headers; body: Uint8Array }> = [];
+// Cloudflare OAuth stub: token endpoint form bodies and upstream auth headers.
+const cloudflareTokenRequests: URLSearchParams[] = [];
+const cloudflareUpstreamAuth: string[] = [];
+let cloudflareTokenCounter = 0;
 
 await migrate();
 
@@ -69,6 +73,41 @@ beforeAll(() => {
     const url = new URL(
       input instanceof Request ? input.url : input.toString()
     );
+    if (
+      url.hostname === "dash.cloudflare.com" &&
+      url.pathname === "/oauth2/token"
+    ) {
+      const form = new URLSearchParams(
+        init?.body instanceof URLSearchParams
+          ? init.body.toString()
+          : String(init?.body ?? "")
+      );
+      cloudflareTokenRequests.push(form);
+      cloudflareTokenCounter++;
+      return new Response(
+        JSON.stringify({
+          access_token: `cf_at_${cloudflareTokenCounter}`,
+          refresh_token: `cf_rt_${cloudflareTokenCounter}`,
+          token_type: "bearer",
+          expires_in: 3600,
+          scope: "account-settings.read user-details.read offline_access",
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    }
+    if (url.hostname === "api.cloudflare.com") {
+      cloudflareUpstreamAuth.push(
+        new Headers(init?.headers).get("authorization") ?? ""
+      );
+      const result =
+        url.pathname === "/client/v4/accounts"
+          ? [{ id: "acc_1", name: "Main account" }]
+          : [];
+      return new Response(JSON.stringify({ success: true, result }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
     if (url.hostname === "web.push.apple.com") {
       pushes.push({
         url: url.toString(),
@@ -1072,6 +1111,88 @@ test("moving domains: old passkeys work via related origins until moved", async 
       }),
     });
     expect(lv.status).toBe(403);
+  } finally {
+    configureEnv(current);
+  }
+});
+
+test("cloudflare connects over OAuth and refreshes with rotation", async () => {
+  await resetDb();
+  const current = env;
+  configureEnv({
+    ...current,
+    CLOUDFLARE_OAUTH_CLIENT_ID: "cf_client",
+    CLOUDFLARE_OAUTH_CLIENT_SECRET: "cf_secret",
+  });
+  try {
+    const userId = await signUpWithKey("pb_flow_a");
+    cloudflareTokenRequests.length = 0;
+    cloudflareUpstreamAuth.length = 0;
+
+    // The app's Connect link goes to Cloudflare's consent screen.
+    const start = await getPage("/app/accounts/connect/cloudflare");
+    expect(start.status).toBe(302);
+    const authorize = new URL(start.headers.get("location") ?? "");
+    expect(authorize.origin + authorize.pathname).toBe(
+      "https://dash.cloudflare.com/oauth2/auth"
+    );
+    expect(authorize.searchParams.get("client_id")).toBe("cf_client");
+    expect(authorize.searchParams.get("redirect_uri")).toBe(
+      `${ORIGIN}/v1/accounts/callback/cloudflare`
+    );
+    expect(authorize.searchParams.get("code_challenge_method")).toBe("S256");
+    const scope = authorize.searchParams.get("scope") ?? "";
+    expect(scope).toContain("offline_access");
+    expect(scope).toContain("workers-scripts.edit");
+
+    // Cloudflare redirects back (with its RFC 9207 issuer).
+    const state = authorize.searchParams.get("state") ?? "";
+    const callback = await app.request(
+      `/v1/accounts/callback/cloudflare?code=abc&state=${encodeURIComponent(state)}&iss=${encodeURIComponent("https://dash.cloudflare.com")}`
+    );
+    expect(callback.status).toBe(200);
+    expect(await callback.text()).toContain("Connected cloudflare");
+    expect(cloudflareTokenRequests[0]?.get("grant_type")).toBe(
+      "authorization_code"
+    );
+    expect(cloudflareTokenRequests[0]?.get("code_verifier")).toBeTruthy();
+
+    // Account names are stored as display metadata.
+    const accounts = await app.request("/v1/accounts", {
+      headers: { authorization: "Bearer pb_flow_a" },
+    });
+    expect(JSON.stringify(await accounts.json())).toContain("Main account");
+    expect(await (await getPage("/app/accounts")).text()).toContain(
+      "Main account"
+    );
+
+    // A passkey-approved request refreshes and uses the new access token.
+    const upstream =
+      "https://api.cloudflare.com/client/v4/accounts/acc_1/workers/scripts";
+    for (const expectedRefresh of ["cf_rt_1", "cf_rt_2"]) {
+      const created = await createProxyRequest(
+        "pb_flow_a",
+        "203.0.113.7",
+        upstream
+      );
+      const approved = await approveViaPage({
+        kind: "proxy",
+        id: created.request_id as string,
+        options: { mode: "once" },
+      });
+      expect(approved.status).toBe(200);
+      cloudflareUpstreamAuth.length = 0;
+      const res = await execute("pb_flow_a", created.request_id as string);
+      expect(res.status).toBe(200);
+      const refresh = cloudflareTokenRequests.at(-1);
+      expect(refresh?.get("grant_type")).toBe("refresh_token");
+      // The rotated refresh token from the previous refresh is used next.
+      expect(refresh?.get("refresh_token")).toBe(expectedRefresh);
+      expect(cloudflareUpstreamAuth).toEqual([
+        `Bearer cf_at_${cloudflareTokenCounter}`,
+      ]);
+    }
+    expect(userId).toBeTruthy();
   } finally {
     configureEnv(current);
   }
