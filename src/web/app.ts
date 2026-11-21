@@ -583,7 +583,7 @@ async function renderReleasesPage(
       });
     });
   `;
-  return sendPage(c, { title: "Releases", body, script, nav: "/app/releases" });
+  return sendPage(c, { title: "Releases", body, script, nav: "/app/accounts" });
 }
 
 appRouter.get("/releases", requireSessionPage, async (c) =>
@@ -688,8 +688,13 @@ appRouter.get("/accounts", requireSessionPage, async (c) => {
               : ""
           }</div>`
         : `<div class="note">${r ? escapeHtml(r.status) : "Not connected"}</div>`;
+      // Release policies only mean something with Apple release signing linked.
+      const releases =
+        active && p === "apple-release"
+          ? ` · <a href="/app/releases">Release policies</a>`
+          : "";
       const actions = active
-        ? `<a href="/app/accounts/connect/${p}">Reconnect</a>
+        ? `<a href="/app/accounts/connect/${p}">Reconnect</a>${releases}
            <form class="inline" method="post" action="/app/accounts/${p}/disconnect" data-confirm="Disconnect ${p}?">
              <button type="submit">Disconnect</button>
            </form>`

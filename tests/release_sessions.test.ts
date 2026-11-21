@@ -832,6 +832,11 @@ test("the Releases page adds a pending policy and the approval pages render both
     `https://github.com/${REPO}/actions/runs/1001/attempts/1`
   );
   expect(releasePage).toContain('"credential":{');
+  const accounts = await (
+    await app.request(`${BASE}/app/accounts`, { headers })
+  ).text();
+  expect(accounts).toContain('<a href="/app/releases">Release policies</a>');
+  expect(accounts.match(/href="\/app\/releases"/g)?.length).toBe(1);
   const inbox = await (await app.request(`${BASE}/app`, { headers })).text();
   expect(inbox).toContain(`/approve/release/${session_id}`);
 });

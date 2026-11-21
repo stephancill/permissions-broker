@@ -44,7 +44,6 @@ const NAV_ITEMS = [
   ["/app", "Requests"],
   ["/app/keys", "API keys"],
   ["/app/accounts", "Accounts"],
-  ["/app/releases", "Releases"],
   ["/app/settings", "Settings"],
 ] as const;
 

@@ -144,7 +144,7 @@ releaseRouter.post("/sessions", async (c) => {
     return c.json(
       {
         error: "no_release_policy",
-        message: `No release policy allows ${claims.repository} ${workflow.path} on ${claims.ref}. Add one under Releases in the app.`,
+        message: `No release policy allows ${claims.repository} ${workflow.path} on ${claims.ref}. Add one under Accounts → apple-release → Release policies in the app.`,
       },
       403
     );

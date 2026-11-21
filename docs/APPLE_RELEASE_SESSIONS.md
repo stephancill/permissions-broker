@@ -74,7 +74,8 @@ are enforced by the broker.
 ## Release policies
 
 `release_policies`: which workflow may release which bundle ids. The user adds
-one on the **Releases** page (`/app/releases`): repository, workflow file, full
+one on the **Releases** page (`/app/releases`, linked from the apple-release
+row under Accounts once it is connected): repository, workflow file, full
 ref (default `refs/heads/main`) and exact bundle ids (app and extensions, at most
 ten, no wildcards). Adding creates a `PENDING_APPROVAL` policy and opens
 `/approve/release_policy/:id`, where a passkey assertion activates it: the
