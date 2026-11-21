@@ -649,6 +649,10 @@ test("API keys are created in the app and shown once", async () => {
   // Listed afterwards without the secret.
   const list = await (await getPage("/app/keys", account.cookie)).text();
   expect(list).toContain("laptop agent");
+  // App title sits above the nav row.
+  expect(list).toContain(
+    '<header class="app"><a href="/app">stupid vault</a></header><nav>'
+  );
   expect(list).not.toContain(key as string);
 });
 

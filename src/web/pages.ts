@@ -23,7 +23,9 @@ const STYLE = `
   h1 { font-size: 20px; margin: 8px 0 12px; }
   h2 { font-size: 16px; margin: 20px 0 8px; }
   p, li { line-height: 1.4; }
-  nav { display: flex; gap: 16px; flex-wrap: wrap; padding-bottom: 8px; border-bottom: 1px solid #8884; }
+  header.app { padding: 8px 0 16px; }
+  header.app a { font-size: 22px; font-weight: 700; color: inherit; text-decoration: none; }
+  nav { display: flex; gap: 16px; flex-wrap: wrap; padding: 6px 0 10px; border-bottom: 1px solid #8884; }
   nav a[aria-current] { font-weight: 600; }
   button { display: block; width: 100%; margin-top: 12px; padding: 12px 14px; font-size: 16px; }
   form.inline { display: inline; }
@@ -49,8 +51,10 @@ const NAV_ITEMS = [
 
 export type NavItem = (typeof NAV_ITEMS)[number][0];
 
+// App title above the nav row: also pushes the nav down from the top edge
+// so it's easier to reach on a phone.
 function renderNav(current: NavItem | undefined): string {
-  return `<nav>${NAV_ITEMS.map(
+  return `<header class="app"><a href="/app">stupid vault</a></header><nav>${NAV_ITEMS.map(
     ([href, label]) =>
       `<a href="${href}"${href === current ? ' aria-current="page"' : ""}>${label}</a>`
   ).join("")}</nav>`;
