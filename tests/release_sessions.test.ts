@@ -81,24 +81,33 @@ function b64(bytes: Uint8Array): string {
   return Buffer.from(bytes).toString("base64");
 }
 
-// A CodeDirectory shaped like stupid-app's (version 0x20400, SHA-256).
-function codeDirectory(identifier: string, teamId: string): Uint8Array {
+// A CodeDirectory shaped like stupid-app's (version 0x20400, SHA-256), with one
+// code hash per page; `pages` sizes it like a real executable's.
+function codeDirectory(
+  identifier: string,
+  teamId: string,
+  pages = 1
+): Uint8Array {
   const ident = new TextEncoder().encode(`${identifier}\0`);
   const team = new TextEncoder().encode(`${teamId}\0`);
   const header = new Uint8Array(88);
   const view = new DataView(header.buffer);
-  const length = 88 + ident.length + team.length + 32;
+  const length = 88 + ident.length + team.length + 32 * pages;
   view.setUint32(0, 0xfade0c02);
   view.setUint32(4, length);
   view.setUint32(8, 0x20400);
   view.setUint32(16, 88 + ident.length + team.length);
   view.setUint32(20, 88);
-  view.setUint32(28, 1);
+  view.setUint32(28, pages);
   header[36] = 32;
   header[37] = 2;
   header[39] = 12;
   view.setUint32(48, 88 + ident.length);
-  return cat(header, ident, team, crypto.getRandomValues(new Uint8Array(32)));
+  const hashes = new Uint8Array(32 * pages);
+  for (let i = 0; i < hashes.length; i += 65536) {
+    crypto.getRandomValues(hashes.subarray(i, i + 65536));
+  }
+  return cat(header, ident, team, hashes);
 }
 
 async function signedAttributes(
@@ -683,6 +692,10 @@ test("a release session runs from request to signature without exposing keys", a
     )
   ).toBe(true);
   expect((await sign(cd, attrs)).status).toBe(403);
+
+  // A real app's CodeDirectory: a 40 MB executable is ~10,000 pages (~320 KB).
+  const large = codeDirectory(EXTENSION, TEAM, 10_000);
+  expect((await sign(large, await signedAttributes(large))).status).toBe(200);
   const other = codeDirectory("net.other.app", TEAM);
   expect((await sign(other, await signedAttributes(other))).status).toBe(403);
 

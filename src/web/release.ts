@@ -55,7 +55,10 @@ export const APPLE_RELEASE_PROVIDER = "apple-release";
 
 const MAX_ASC_REQUEST_BYTES = 64 * 1024;
 const MAX_ASC_RESPONSE_BYTES = 8 * 1024 * 1024;
-const MAX_SIGN_FIELD_BYTES = 256 * 1024;
+// A CodeDirectory holds a 32-byte hash per 4 KiB page: 8 MiB of base64 covers a
+// ~1 GiB executable. The signed attributes are a few hundred bytes.
+const MAX_CODE_DIRECTORY_BASE64 = 8 * 1024 * 1024;
+const MAX_SIGNED_ATTRIBUTES_BASE64 = 64 * 1024;
 const JWT_REFRESH_MARGIN_MS = 2 * 60_000;
 
 const BUNDLE_ID = /^[A-Za-z0-9.-]{1,155}$/;
@@ -67,8 +70,8 @@ const CreateSchema = z.object({
 });
 
 const SignSchema = z.object({
-  codeDirectory: z.string().min(1).max(MAX_SIGN_FIELD_BYTES),
-  signedAttributes: z.string().min(1).max(MAX_SIGN_FIELD_BYTES),
+  codeDirectory: z.string().min(1).max(MAX_CODE_DIRECTORY_BASE64),
+  signedAttributes: z.string().min(1).max(MAX_SIGNED_ATTRIBUTES_BASE64),
 });
 
 function fromBase64(s: string): Uint8Array | null {
@@ -518,7 +521,17 @@ releaseRouter.post("/session/:id/:secret/sign", async (c) => {
   if (!meta) return c.json({ error: "no_linked_apple_release" }, 409);
 
   const parsed = SignSchema.safeParse(await c.req.json().catch(() => null));
-  if (!parsed.success) return c.json({ error: "invalid_request" }, 400);
+  if (!parsed.success) {
+    return c.json(
+      {
+        error: "invalid_request",
+        message: parsed.error.issues
+          .map((i) => `${i.path.join(".")}: ${i.message}`)
+          .join("; "),
+      },
+      400
+    );
+  }
   const codeDirectory = fromBase64(parsed.data.codeDirectory);
   const signedAttributes = fromBase64(parsed.data.signedAttributes);
   if (!codeDirectory || !signedAttributes) {
