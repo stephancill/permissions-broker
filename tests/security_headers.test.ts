@@ -53,6 +53,11 @@ test("manifest and service worker are served for the PWA", async () => {
   const js = await sw.text();
   expect(js).toContain('addEventListener("push"');
   expect(js).toContain('addEventListener("notificationclick"');
+  // Open windows are told where to go (Safari lacks WindowClient.navigate).
+  expect(js).toContain('type: "pb-open"');
+  expect(js).not.toContain(".navigate(");
+  const page = await (await app.request("/app/signin")).text();
+  expect(page).toContain('d.type !== "pb-open"');
 });
 
 test("signed-out app pages redirect to passkey sign-in", async () => {

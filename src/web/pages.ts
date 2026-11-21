@@ -56,6 +56,21 @@ function renderNav(current: NavItem | undefined): string {
   ).join("")}</nav>`;
 }
 
+// Tapping a push notification while the app is open: the service worker
+// posts the target URL (Safari can't navigate a window from the worker).
+const OPEN_FROM_NOTIFICATION_SCRIPT = `
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.addEventListener("message", function (e) {
+      var d = e.data;
+      if (!d || d.type !== "pb-open" || typeof d.url !== "string") return;
+      try {
+        var u = new URL(d.url, location.origin);
+        if (u.origin === location.origin && u.href !== location.href) location.assign(u.href);
+      } catch (err) { /* ignore malformed */ }
+    });
+  }
+`;
+
 // Every page is part of the installable PWA. Pages touching key material use
 // inline-only scripts gated by a per-response nonce, no third-party origins,
 // and same-origin fetches/forms only.
@@ -81,7 +96,11 @@ export function sendPage(
   c.header("Referrer-Policy", "same-origin");
   c.header("Cache-Control", "no-store");
 
-  const scripts = [params.crypto ? CLIENT_CRYPTO_JS : "", params.script ?? ""]
+  const scripts = [
+    OPEN_FROM_NOTIFICATION_SCRIPT,
+    params.crypto ? CLIENT_CRYPTO_JS : "",
+    params.script ?? "",
+  ]
     .filter(Boolean)
     .map((s) => `<script nonce="${nonce}">${s}</script>`)
     .join("\n    ");

@@ -912,15 +912,13 @@ self.addEventListener("notificationclick", function (event) {
   if (target.origin !== self.location.origin) target = new URL("/app", self.location.origin);
   event.waitUntil((async function () {
     var windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
-    for (var i = 0; i < windows.length; i++) {
-      var w = windows[i];
-      try {
-        await w.focus();
-        await w.navigate(target.href);
-        return;
-      } catch (e) {
-        // fall through to openWindow
-      }
+    if (windows.length) {
+      // Safari lacks WindowClient navigation, so the open app navigates
+      // itself when told to (listener in every page, src/web/pages.ts).
+      var w = windows[0];
+      w.postMessage({ type: "pb-open", url: target.href });
+      try { await w.focus(); } catch (e) { /* not allowed to focus: still told */ }
+      return;
     }
     await self.clients.openWindow(target.href);
   })());
