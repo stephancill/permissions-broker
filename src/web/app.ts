@@ -22,7 +22,13 @@ import {
   listLinkedAccountsByProvider,
 } from "../connect/links";
 import { db } from "../db/client";
-import { approvalPath } from "../passkey/webauthn";
+import {
+  approvalPath,
+  expectedRpId,
+  getUserPasskey,
+  legacyPasskeysExist,
+  legacyRpId,
+} from "../passkey/webauthn";
 import {
   deletePushSubscription,
   notifyUser,
@@ -56,10 +62,19 @@ appRouter.get("/signin", async (c) => {
   if (await getWebSession(c)) return c.redirect(next, 302);
 
   const signup = await isSignupAllowed();
+  // While moving domains, passkeys from the previous domain still sign in
+  // (Related Origin Requests); the browser needs that RP ID explicitly.
+  const legacy = (await legacyPasskeysExist()) ? legacyRpId() : null;
   const body = `
     <h1>stupid vault</h1>
     <p>Sign in with the passkey that protects your linked accounts.</p>
     <button id="signin" type="button">Sign in with passkey</button>
+    ${
+      legacy
+        ? `<button id="signin-legacy" type="button" data-rp-id="${escapeHtml(legacy)}">Sign in with your ${escapeHtml(legacy)} passkey</button>
+      <p class="note">This app moved from ${escapeHtml(legacy)}. Use that button if your passkey was created there.</p>`
+        : ""
+    }
     ${
       signup
         ? `<h2>New here?</h2>
@@ -81,6 +96,11 @@ appRouter.get("/signin", async (c) => {
     document.getElementById("signin").onclick = function () {
       setStatus("Confirm with your passkey…");
       signInWithPasskey().then(function () { location.replace(NEXT); }).catch(fail);
+    };
+    var legacyBtn = document.getElementById("signin-legacy");
+    if (legacyBtn) legacyBtn.onclick = function () {
+      setStatus("Confirm with your passkey…");
+      signInWithPasskey(legacyBtn.dataset.rpId).then(function () { location.replace(NEXT); }).catch(fail);
     };
     var signupBtn = document.getElementById("signup");
     if (signupBtn) signupBtn.onclick = function () {
@@ -291,6 +311,13 @@ function vapidKeyScript(): string {
   return `window.PB_VAPID_KEY = ${scriptJson(vapidKeys()?.publicKey ?? null)};`;
 }
 
+// Shown until a passkey from the previous domain has been moved.
+async function movePasskeyNotice(userId: string): Promise<string> {
+  const passkey = await getUserPasskey(userId);
+  if (!passkey || passkey.rp_id === expectedRpId()) return "";
+  return `<p class="error">Your passkey still belongs to ${escapeHtml(passkey.rp_id)}. <a href="/passkey/enroll">Move it to ${escapeHtml(expectedRpId())}</a> before the old domain is retired.</p>`;
+}
+
 appRouter.get("/", requireSessionPage, async (c) => {
   const { userId } = c.get("webSession");
   const items = await loadInbox(userId);
@@ -298,6 +325,7 @@ appRouter.get("/", requireSessionPage, async (c) => {
   const recent = items.filter((i) => !isActionable(i)).slice(0, 20);
 
   const body = `
+    ${await movePasskeyNotice(userId)}
     ${pushSection(false)}
     <h1>Pending</h1>
     ${
@@ -599,6 +627,7 @@ appRouter.get("/settings", requireSessionPage, async (c) => {
 
   const body = `
     <h1>Settings</h1>
+    ${await movePasskeyNotice(userId)}
     ${pushSection(true)}
     <h2>Notification devices</h2>
     ${deviceRows ? `<ul class="list">${deviceRows}</ul>` : "<p>No devices yet.</p>"}

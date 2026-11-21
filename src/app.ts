@@ -1,5 +1,10 @@
 import { Hono } from "hono";
 
+import {
+  expectedOrigin,
+  legacyRpId,
+  relatedOriginsDocument,
+} from "./passkey/webauthn";
 import { accountRouter } from "./web/accounts";
 import { appRouter, MANIFEST, SERVICE_WORKER_JS } from "./web/app";
 import { approveRouter } from "./web/approve";
@@ -38,6 +43,23 @@ export function createApp(options: CreateAppOptions = {}) {
     for (const [name, value] of Object.entries(securityHeaders)) {
       if (!c.res.headers.has(name)) c.res.headers.set(name, value);
     }
+  });
+
+  // Previous domain while migrating (WEBAUTHN_LEGACY_RP_ID): it vouches for
+  // the new origin so old passkeys keep working, and keeps serving the agent
+  // API (agents and OAuth callbacks may still use it). Pages redirect.
+  app.use("*", async (c, next) => {
+    const legacy = legacyRpId();
+    const url = new URL(c.req.url);
+    if (!legacy || url.hostname !== legacy) return next();
+    if (url.pathname === "/.well-known/webauthn") {
+      c.header("Cache-Control", "no-cache");
+      return c.json(relatedOriginsDocument());
+    }
+    if (url.pathname.startsWith("/v1/") || url.pathname === "/healthz") {
+      return next();
+    }
+    return c.redirect(`${expectedOrigin()}${url.pathname}${url.search}`, 308);
   });
 
   app.get("/", (c) => c.redirect("/app", 302));

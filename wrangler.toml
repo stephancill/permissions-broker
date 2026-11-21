@@ -4,7 +4,11 @@ compatibility_date = "2026-07-18"
 compatibility_flags = ["nodejs_compat"]
 # Disable the public *.workers.dev subdomain; serve only on the custom route.
 workers_dev = false
+# vault.stupidtech.net is APP_BASE_URL. permissions-broker.stupidtech.net is
+# the previous domain (WEBAUTHN_LEGACY_RP_ID): it serves /.well-known/webauthn
+# for old passkeys and the /v1 API, and redirects pages.
 routes = [
+  { pattern = "vault.stupidtech.net", custom_domain = true },
   { pattern = "permissions-broker.stupidtech.net/*", zone_name = "stupidtech.net" }
 ]
 

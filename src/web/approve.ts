@@ -19,7 +19,6 @@ import { db } from "../db/client";
 import {
   approvalChallenge,
   consumeChallenge,
-  expectedRpId,
   getUserPasskey,
   getWrappedPrivateKey,
   storeChallenge,
@@ -420,7 +419,8 @@ approveRouter.get("/:kind/:id", requireSessionPage, async (c) => {
   const data = {
     kind: target.kind,
     id: target.id,
-    rp_id: expectedRpId(),
+    // The passkey's own RP ID (the previous domain until it is moved).
+    rp_id: passkey.rp_id,
     user_id: target.userId,
     passkey: {
       credential_id: passkey.credential_id,

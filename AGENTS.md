@@ -183,6 +183,10 @@ See `docs/PWA_PUSH.md`.
   (`isAllowedPushEndpoint`); the broker must never POST to arbitrary URLs.
 - Push payloads are end-to-end encrypted to the device but still keep them to
   summaries (no credentials, no response bodies).
+- Never change `APP_BASE_URL`'s host without the domain migration in
+  `docs/DOMAIN_MIGRATION.md`: passkeys are bound to their RP ID. Use the stored
+  `user_passkeys.rp_id` (via `getUserPasskey`/`passkeyRpId`), never assume the
+  current host, when verifying or requesting assertions.
 - `users.telegram_user_id` is a legacy NOT NULL UNIQUE column that cannot be
   dropped on D1 (rebuilding `users` cascades deletes). New users get a random
   negative placeholder; nothing reads it.

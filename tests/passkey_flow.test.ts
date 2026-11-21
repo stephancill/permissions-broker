@@ -893,3 +893,186 @@ test("a new request is pushed, encrypted, to the user's devices", async () => {
     configureEnv(current);
   }
 });
+
+test("moving domains: old passkeys work via related origins until moved", async () => {
+  await resetDb();
+  const current = env;
+  const OLD = "https://old.test";
+
+  // An account created while the broker lived on the old domain.
+  configureEnv({ ...current, APP_BASE_URL: OLD });
+  let userId: string;
+  let oldCredentialId: string;
+  try {
+    const o = await postJson("/passkey/signup/options", {}, { origin: OLD });
+    expect(o.status).toBe(200);
+    userId = o.json.user_id as string;
+    const created = await authenticator.create({
+      challenge: (o.json.registration_options as { challenge: string })
+        .challenge,
+      rpId: "old.test",
+      origin: OLD,
+    });
+    oldCredentialId = created.credential.idB64;
+    const prf = await authenticator.prf(
+      oldCredentialId,
+      fromBase64Url(o.json.prf_salt as string)
+    );
+    const pair = await PB.generateUserKeypair();
+    const wrapped = await PB.wrapPrivateKey(
+      await PB.deriveKek(prf, userId),
+      pair.privateKey,
+      userId
+    );
+    const v = await postJson(
+      "/passkey/signup/verify",
+      {
+        nonce: o.json.nonce,
+        registration: created.response,
+        public_key: toBase64Url(pair.publicKeyRaw),
+        wrapped_private_key: toBase64Url(wrapped),
+      },
+      { origin: OLD }
+    );
+    expect(v.status).toBe(200);
+  } finally {
+    configureEnv(current);
+  }
+  await insertApiKey(userId, "pb_flow_a");
+  await saveLinkedCredential({
+    userId,
+    provider: "github",
+    providerUserId: "unknown",
+    scopes: "repo",
+    plaintext: GITHUB_TOKEN,
+  });
+
+  // The broker moves to broker.test; old.test becomes the legacy RP ID.
+  configureEnv({ ...current, WEBAUTHN_LEGACY_RP_ID: "old.test" });
+  try {
+    const wellKnown = await app.request(`${OLD}/.well-known/webauthn`);
+    expect(await wellKnown.json()).toEqual({ origins: [ORIGIN] });
+    const page = await app.request(`${OLD}/app/keys?x=1`);
+    expect(page.status).toBe(308);
+    expect(page.headers.get("location")).toBe(`${ORIGIN}/app/keys?x=1`);
+    const api = await app.request(`${OLD}/v1/whoami`, {
+      headers: { authorization: "Bearer pb_flow_a" },
+    });
+    expect(api.status).toBe(200);
+    // The new domain doesn't serve the well-known file itself.
+    expect((await app.request(`${ORIGIN}/.well-known/webauthn`)).status).toBe(
+      404
+    );
+
+    const signinPage = await (await getPage("/app/signin", "")).text();
+    expect(signinPage).toContain('data-rp-id="old.test"');
+
+    // Sign in on the new origin with the old-domain passkey.
+    sessionCookie = "";
+    const so = await postJson("/passkey/signin/options", {});
+    const sv = await postJson("/passkey/signin/verify", {
+      nonce: so.json.nonce,
+      assertion: await authenticator.get({
+        credentialId: oldCredentialId,
+        challenge: so.json.challenge as string,
+      }),
+    });
+    expect(sv.status).toBe(200);
+    sessionCookie = cookieFrom(sv.res);
+    expect(await (await getPage("/app")).text()).toContain("Move it to");
+
+    // Approvals keep working with the old passkey (and unlock credentials).
+    const first = await createProxyRequest("pb_flow_a");
+    const approvalHtml = await (
+      await getPage(`/approve/proxy/${first.request_id}`)
+    ).text();
+    expect(approvalHtml).toContain('"rp_id":"old.test"');
+    const approved = await approveViaPage({
+      kind: "proxy",
+      id: first.request_id as string,
+      options: { mode: "once" },
+    });
+    expect(approved.status).toBe(200);
+    expect(
+      (await execute("pb_flow_a", first.request_id as string)).status
+    ).toBe(200);
+
+    // Move the passkey: unlock with the old one, wrap under a new one.
+    const eo = await postJson("/passkey/enroll/options", {});
+    const existing = eo.json.existing as {
+      credential_id: string;
+      rp_id: string;
+      prf_salt: string;
+      public_key: string;
+      wrapped_private_key: string;
+    };
+    expect(existing.rp_id).toBe("old.test");
+    const privateKey = await PB.unwrapPrivateKey(
+      await PB.deriveKek(
+        await authenticator.prf(
+          existing.credential_id,
+          fromBase64Url(existing.prf_salt)
+        ),
+        userId
+      ),
+      fromBase64Url(existing.wrapped_private_key),
+      userId,
+      true
+    );
+    const created = await authenticator.create({
+      challenge: (eo.json.registration_options as { challenge: string })
+        .challenge,
+    });
+    const newPrf = await authenticator.prf(
+      created.credential.idB64,
+      fromBase64Url(eo.json.prf_salt as string)
+    );
+    const moved = await postJson("/passkey/enroll/verify", {
+      nonce: eo.json.nonce,
+      mode: "rewrap",
+      registration: created.response,
+      public_key: existing.public_key,
+      wrapped_private_key: toBase64Url(
+        await PB.wrapPrivateKey(
+          await PB.deriveKek(newPrf, userId),
+          privateKey,
+          userId
+        )
+      ),
+    });
+    expect(moved.status).toBe(200);
+
+    // Now on the new RP ID: no nudge, no legacy sign-in, and approvals
+    // (including credential unlock) work with the new passkey.
+    expect(await (await getPage("/app")).text()).not.toContain("Move it to");
+    expect(await (await getPage("/app/signin", "")).text()).not.toContain(
+      "data-rp-id="
+    );
+    const second = await createProxyRequest("pb_flow_a");
+    expect(
+      await (await getPage(`/approve/proxy/${second.request_id}`)).text()
+    ).toContain('"rp_id":"broker.test"');
+    const approvedAgain = await approveViaPage({
+      kind: "proxy",
+      id: second.request_id as string,
+      options: { mode: "once" },
+    });
+    expect(approvedAgain.status).toBe(200);
+    expect(
+      (await execute("pb_flow_a", second.request_id as string)).status
+    ).toBe(200);
+
+    // The old passkey no longer signs in.
+    const lo = await postJson("/passkey/signin/options", {});
+    const lv = await postJson("/passkey/signin/verify", {
+      nonce: lo.json.nonce,
+      assertion: await authenticator.get({
+        credentialId: oldCredentialId,
+        challenge: lo.json.challenge as string,
+      }),
+    });
+    expect(lv.status).toBe(403);
+  } finally {
+    configureEnv(current);
+  }
+});

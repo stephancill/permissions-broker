@@ -60,6 +60,8 @@ export type VirtualCredential = {
   keyPair: CryptoKeyPair;
   prfSecret: Uint8Array;
   counter: number;
+  // RP ID the credential was created under.
+  rpId: string;
 };
 
 export function createVirtualAuthenticator(params: {
@@ -81,7 +83,14 @@ export function createVirtualAuthenticator(params: {
     return crypto.subtle.sign("HMAC", key, new Uint8Array(salt));
   }
 
-  async function create(opts: { challenge: string }) {
+  // rpId/origin default to the authenticator's; override them to create a
+  // credential for another domain.
+  async function create(opts: {
+    challenge: string;
+    rpId?: string;
+    origin?: string;
+  }) {
+    const rpId = opts.rpId ?? params.rpId;
     const keyPair = (await crypto.subtle.generateKey(
       { name: "ECDSA", namedCurve: "P-256" },
       true,
@@ -94,6 +103,7 @@ export function createVirtualAuthenticator(params: {
       keyPair,
       prfSecret: crypto.getRandomValues(new Uint8Array(32)),
       counter: 0,
+      rpId,
     };
     credentials.set(cred.idB64, cred);
 
@@ -110,7 +120,7 @@ export function createVirtualAuthenticator(params: {
       ])
     );
     const authData = concatBytes(
-      await sha256(new TextEncoder().encode(params.rpId)),
+      await sha256(new TextEncoder().encode(rpId)),
       new Uint8Array([FLAG_UP | FLAG_UV | FLAG_AT]),
       u32be(0),
       new Uint8Array(16),
@@ -138,7 +148,7 @@ export function createVirtualAuthenticator(params: {
             clientData({
               type: "webauthn.create",
               challenge: opts.challenge,
-              origin: params.origin,
+              origin: opts.origin ?? params.origin,
             })
           ),
           attestationObject: toBase64Url(attestationObject),
@@ -148,20 +158,26 @@ export function createVirtualAuthenticator(params: {
     };
   }
 
-  async function get(opts: { credentialId: string; challenge: string }) {
+  // origin overrides the calling origin (a related-origin request signs for
+  // the credential's RP ID from another origin).
+  async function get(opts: {
+    credentialId: string;
+    challenge: string;
+    origin?: string;
+  }) {
     const cred = credentials.get(opts.credentialId);
     if (!cred) throw new Error("unknown credential");
     cred.counter++;
 
     const authData = concatBytes(
-      await sha256(new TextEncoder().encode(params.rpId)),
+      await sha256(new TextEncoder().encode(cred.rpId)),
       new Uint8Array([FLAG_UP | FLAG_UV]),
       u32be(cred.counter)
     );
     const cdj = clientData({
       type: "webauthn.get",
       challenge: opts.challenge,
-      origin: params.origin,
+      origin: opts.origin ?? params.origin,
     });
     const signed = concatBytes(authData, await sha256(cdj));
     const sigRaw = new Uint8Array(

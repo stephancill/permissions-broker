@@ -38,7 +38,7 @@ import {
   userIdForCredential,
   verifyPasskeyAssertion,
 } from "../passkey/webauthn";
-import { POST_JSON_SCRIPT, sendPage } from "./pages";
+import { escapeHtml, POST_JSON_SCRIPT, sendPage } from "./pages";
 
 const ReplaceMode = z.enum(["rewrap", "replace_lost"]);
 type EnrollMode = "new" | z.infer<typeof ReplaceMode>;
@@ -158,12 +158,13 @@ async function savePasskey(params: {
   const cred = params.enrollment.credential;
   await database
     .query(
-      "INSERT INTO user_passkeys (user_id, credential_id, public_key, sign_count, transports, prf_salt, created_at) VALUES (?, ?, ?, ?, ?, ?, ?) " +
-        "ON CONFLICT(user_id) DO UPDATE SET credential_id = excluded.credential_id, public_key = excluded.public_key, sign_count = excluded.sign_count, transports = excluded.transports, prf_salt = excluded.prf_salt, created_at = excluded.created_at;"
+      "INSERT INTO user_passkeys (user_id, credential_id, rp_id, public_key, sign_count, transports, prf_salt, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) " +
+        "ON CONFLICT(user_id) DO UPDATE SET credential_id = excluded.credential_id, rp_id = excluded.rp_id, public_key = excluded.public_key, sign_count = excluded.sign_count, transports = excluded.transports, prf_salt = excluded.prf_salt, created_at = excluded.created_at;"
     )
     .run(
       params.userId,
       cred.id,
+      expectedRpId(),
       cred.publicKey,
       cred.counter,
       cred.transports ? JSON.stringify(cred.transports) : null,
@@ -211,7 +212,8 @@ export const ENROLL_SCRIPT = `
     var privateKey, publicKeyRaw;
     if (mode === "rewrap") {
       setStatus("Unlock your current passkey…");
-      var oldPrf = await prfFromGet(opts.rp.id, PB.unb64u(o.existing.credential_id), PB.unb64u(o.existing.prf_salt));
+      // The current passkey may belong to the previous domain (related origins).
+      var oldPrf = await prfFromGet(o.existing.rp_id, PB.unb64u(o.existing.credential_id), PB.unb64u(o.existing.prf_salt));
       if (!oldPrf) throw new Error("Current passkey did not return a PRF value.");
       var oldKek = await PB.deriveKek(oldPrf, userId);
       privateKey = await PB.unwrapPrivateKey(oldKek, PB.unb64u(o.existing.wrapped_private_key), userId, true);
@@ -255,11 +257,12 @@ export const ENROLL_SCRIPT = `
 
 // Browser side of sign-in: usernameless assertion with a discoverable passkey.
 export const SIGNIN_SCRIPT = `
-  async function signInWithPasskey() {
+  // rpId: the current domain, or the previous one while migrating.
+  async function signInWithPasskey(rpId) {
     var o = await postJson("/passkey/signin/options", {});
     var a = await navigator.credentials.get({ publicKey: {
       challenge: PB.unb64u(o.challenge),
-      rpId: o.rp_id,
+      rpId: rpId || o.rp_id,
       userVerification: "required",
     }});
     return postJson("/passkey/signin/verify", { nonce: o.nonce, assertion: PB.assertionToJSON(a) });
@@ -412,11 +415,22 @@ passkeyRouter.post("/signout", requireSameOrigin, async (c) => {
 // --- Replace the passkey of a signed-in user. ---
 
 passkeyRouter.get("/enroll", requireSessionPage, async (c) => {
-  const body = `
-    <h1>Replace passkey</h1>
+  const { userId } = c.get("webSession");
+  const passkey = await getUserPasskey(userId);
+  // A passkey from the previous domain is moved with a re-wrap: the old
+  // passkey unlocks the key, a new passkey for this domain wraps it again.
+  const moving = passkey != null && passkey.rp_id !== expectedRpId();
+  const intro = moving
+    ? `<h1>Move passkey to ${escapeHtml(expectedRpId())}</h1>
+    <p>Your passkey belongs to <b>${escapeHtml(passkey.rp_id)}</b>. Moving it creates a new passkey for <b>${escapeHtml(expectedRpId())}</b> and re-encrypts your key to it, so linked accounts stay connected.</p>
+    <p class="note">You'll confirm with Face ID twice: once to unlock with the current passkey, once to create the new one. Keep the old passkey until this succeeds.</p>
+    <button id="rewrap" type="button">Move passkey</button>`
+    : `<h1>Replace passkey</h1>
     <p>Your connected accounts are encrypted with a key that only your passkey can unlock. Every approval needs Face ID / Touch ID.</p>
     <p class="note">Save the passkey in your device's password manager (e.g. Apple Passwords). It must support the passkey PRF extension.</p>
-    <button id="rewrap" type="button">Replace passkey (I still have my current one)</button>
+    <button id="rewrap" type="button">Replace passkey (I still have my current one)</button>`;
+  const body = `
+    ${intro}
     <button id="replace_lost" type="button">I lost my passkey — start over</button>
     <p class="note">Starting over disconnects every linked account; you will need to reconnect them.</p>
     <p id="status"></p>`;
@@ -479,6 +493,7 @@ passkeyRouter.post("/enroll/options", requireSessionJson, async (c) => {
       passkey && publicKey && wrapped
         ? {
             credential_id: passkey.credential_id,
+            rp_id: passkey.rp_id,
             prf_salt: passkey.prf_salt,
             public_key: toBase64Url(publicKey),
             wrapped_private_key: toBase64Url(wrapped),
@@ -570,7 +585,11 @@ async function finishReplacement(
     },
   });
 
-  const parts = ["Passkey saved."];
+  const parts = [
+    params.mode === "rewrap"
+      ? `Passkey saved for ${expectedRpId()}; use it from now on.`
+      : "Passkey saved.",
+  ];
   if (migration.migrated) {
     parts.push(
       `Re-encrypted ${migration.migrated} linked account(s) to your passkey.`

@@ -21,8 +21,27 @@ function baseUrl(): URL {
   return new URL(env.APP_BASE_URL);
 }
 
+// RP ID for new passkeys: the APP_BASE_URL host.
 export function expectedRpId(): string {
   return baseUrl().hostname;
+}
+
+// The previous domain while migrating, if it differs from the current one.
+export function legacyRpId(): string | null {
+  const legacy = env.WEBAUTHN_LEGACY_RP_ID?.trim().toLowerCase();
+  return legacy && legacy !== expectedRpId() ? legacy : null;
+}
+
+// RP ID a stored passkey was registered under (NULL rows predate rp_id).
+export function passkeyRpId(stored: string | null): string {
+  return stored ?? legacyRpId() ?? expectedRpId();
+}
+
+// Served at https://<legacy RP ID>/.well-known/webauthn: lets the current
+// origin use passkeys registered under the legacy RP ID (WebAuthn Related
+// Origin Requests).
+export function relatedOriginsDocument(): { origins: string[] } | null {
+  return legacyRpId() ? { origins: [expectedOrigin()] } : null;
 }
 
 export function expectedOrigin(): string {
@@ -196,8 +215,22 @@ export async function userIdForCredential(
   return row?.user_id ?? null;
 }
 
+// Whether any passkey still uses the legacy RP ID (sign-in offers it then).
+export async function legacyPasskeysExist(): Promise<boolean> {
+  const legacy = legacyRpId();
+  if (!legacy) return false;
+  const database = await db();
+  const row = await database
+    .query(
+      "SELECT 1 AS ok FROM user_passkeys WHERE rp_id IS NULL OR rp_id = ? LIMIT 1;"
+    )
+    .get<{ ok: number }>(legacy);
+  return row != null;
+}
+
 export type UserPasskey = {
   credential_id: string;
+  rp_id: string;
   public_key: Uint8Array;
   sign_count: number;
   transports: string | null;
@@ -210,10 +243,18 @@ export async function getUserPasskey(
   const database = await db();
   const row = (await database
     .query(
-      "SELECT credential_id, public_key, sign_count, transports, prf_salt FROM user_passkeys WHERE user_id = ?;"
+      "SELECT credential_id, rp_id, public_key, sign_count, transports, prf_salt FROM user_passkeys WHERE user_id = ?;"
     )
-    .get(userId)) as UserPasskey | null;
-  return row ? { ...row, public_key: toBytes(row.public_key) } : null;
+    .get(userId)) as
+    | (Omit<UserPasskey, "rp_id"> & { rp_id: string | null })
+    | null;
+  return row
+    ? {
+        ...row,
+        rp_id: passkeyRpId(row.rp_id),
+        public_key: toBytes(row.public_key),
+      }
+    : null;
 }
 
 export async function getWrappedPrivateKey(
@@ -241,7 +282,7 @@ export async function verifyPasskeyAssertion(params: {
       response: params.response,
       expectedChallenge: params.expectedChallenge,
       expectedOrigin: expectedOrigin(),
-      expectedRPID: expectedRpId(),
+      expectedRPID: passkey.rp_id,
       requireUserVerification: true,
       credential: {
         id: passkey.credential_id,

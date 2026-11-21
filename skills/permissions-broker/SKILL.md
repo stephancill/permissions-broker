@@ -42,7 +42,7 @@ This script handles the full flow for `/v1/proxy`:
 - `PB_API_KEY` env var (required; the CLI fails loudly if it is unset)
 - Curl-like request args (URL + optional `-X`, `-H`, `-d`, `-G`)
 
-The CLI uses `https://permissions-broker.stupidtech.net` by default.
+The CLI uses `https://vault.stupidtech.net` by default.
 
 ### Example
 

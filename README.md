@@ -33,7 +33,7 @@ When self-hosting, update the skill definition to point to your own broker insta
    - VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY: from step 2 (rotating them invalidates every device's push subscription)
    - VAPID_SUBJECT: `mailto:` or `https:` contact for push services (Apple requires it)
    - ALLOW_SIGNUP: `true` to let anyone create an account; otherwise sign-up is only open while the broker has no users
-   - APP_BASE_URL: Publicly reachable https URL (e.g. https://your-host.com). It is also the passkey (WebAuthn) relying party: changing the domain invalidates enrolled passkeys.
+   - APP_BASE_URL: Publicly reachable https URL (e.g. https://your-host.com). It is also the passkey (WebAuthn) relying party: to change the domain later, follow `docs/DOMAIN_MIGRATION.md` (`WEBAUTHN_LEGACY_RP_ID`).
    - APP_SECRET: Generate a random secret (openssl rand -base64 32)
    - Provider OAuth credentials (optional, for providers you want to support):
      - Google: Google Cloud Console -> OAuth 2.0
@@ -64,6 +64,8 @@ Key points:
 - Import the Railway SQLite database into D1 before cutover.
 - Keep `APP_BASE_URL` on the same production domain when possible.
 - Set `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY` (secret) and `VAPID_SUBJECT` on the Worker.
+
+Production: `https://vault.stupidtech.net` (previously `permissions-broker.stupidtech.net`, which still serves the API and redirects pages; see `docs/DOMAIN_MIGRATION.md`).
 
 Deploys: the `permissions-broker` Worker is connected to this repo with Cloudflare Workers Builds. Every push to `main` runs `bun run typecheck && bun test` from the repo root, then `bunx wrangler deploy`. D1 migrations are not applied by the build: run `bunx wrangler d1 migrations apply permissions-broker --remote` before pushing a change that needs them.
 

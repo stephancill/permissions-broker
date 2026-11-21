@@ -36,6 +36,10 @@ const EnvSchema = z.object({
   DB_PATH: z.string().min(1).default(dbPathDefault),
   APP_BASE_URL: z.string().min(1).optional(),
   APP_SECRET: z.string().min(1).optional(),
+  // Previous domain (WebAuthn RP ID) when the broker moves to a new
+  // APP_BASE_URL. Its passkeys keep working through Related Origin Requests
+  // until each user moves theirs; see docs/DOMAIN_MIGRATION.md.
+  WEBAUTHN_LEGACY_RP_ID: z.string().min(1).optional(),
   // Web Push (VAPID). Generate with `bun scripts/vapid_keys.ts`.
   VAPID_PUBLIC_KEY: z.string().min(1).optional(),
   VAPID_PRIVATE_KEY: z.string().min(1).optional(),

@@ -2,8 +2,9 @@
 
 The user surface is an installable progressive web app at `/app`, branded
 **stupid vault** (lowercase; manifest name, home-screen title, sign-in heading,
-passkey RP name). The service, API, domain and agent skill keep the
-`permissions-broker` name: the domain is the passkey RP ID, so it must not change. It replaces the
+passkey RP name). The service, API and agent skill keep the
+`permissions-broker` name. It is served from `vault.stupidtech.net`; the domain
+is the passkey RP ID, so moving it needs `docs/DOMAIN_MIGRATION.md`. It replaces the
 Telegram bot that used to handle sign-up, API keys, account linking and approval
 prompts.
 
