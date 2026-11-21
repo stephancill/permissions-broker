@@ -8,7 +8,9 @@ export function githubProvider(): OAuthProviderConfig {
 
   return {
     id: "github",
-    issuer: "https://github.com",
+    // GitHub returns iss=https://github.com/login/oauth on the authorization
+    // callback (RFC 9207), which oauth4webapi checks against this value.
+    issuer: "https://github.com/login/oauth",
     authorizationEndpoint: "https://github.com/login/oauth/authorize",
     tokenEndpoint: "https://github.com/login/oauth/access_token",
     clientId: env.GITHUB_OAUTH_CLIENT_ID,
