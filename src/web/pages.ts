@@ -28,7 +28,7 @@ const STYLE = `
   button { display: block; width: 100%; margin-top: 12px; padding: 12px 14px; font-size: 16px; }
   form.inline { display: inline; }
   form.inline button { display: inline; width: auto; margin: 4px 8px 4px 0; padding: 6px 10px; font-size: 14px; }
-  input[type=text] { width: 100%; box-sizing: border-box; padding: 10px; font-size: 16px; }
+  input[type=text], input[type=password], input[type=email], input[type=number] { display: block; width: 100%; box-sizing: border-box; margin-top: 4px; padding: 10px; font-size: 16px; }
   label { display: block; margin: 8px 0; }
   ul.list { list-style: none; padding: 0; margin: 0; }
   ul.list > li { padding: 10px 0; border-bottom: 1px solid #8884; }

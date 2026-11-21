@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { type Context, Hono } from "hono";
 
 import { auditEvent } from "../audit/audit";
 import { requireApiKey } from "../auth/apiKey";
@@ -19,6 +19,7 @@ import { getProvider } from "../oauth/registry";
 import { getOauthState, markOauthStateUsed } from "../oauth/state";
 import { discoverImapSettings } from "../providers/imap/discovery";
 import { registerAppleReleaseConnect } from "./appleReleaseConnect";
+import { escapeHtml, sendPage } from "./pages";
 
 type CloudflareAccountMetadata = {
   id: string;
@@ -38,140 +39,57 @@ const NOT_ENROLLED_MESSAGE =
 export const accountRouter = new Hono();
 registerAppleReleaseConnect(accountRouter);
 
-function escapeHtml(s: string): string {
-  return s
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
+// Connect pages use the PWA shell (theme incl. dark mode, nonce CSP). They
+// open outside the app's navigation (OAuth sheet or form), so no nav bar.
+function connectResultPage(
+  c: Context,
+  params: { ok: boolean; message: string; status?: number }
+): Response {
+  const title = params.ok ? "Connected" : "Connection failed";
+  return sendPage(c, {
+    title,
+    nav: null,
+    status: params.status ?? (params.ok ? 200 : 400),
+    body: `<h1>${escapeHtml(title)}</h1>
+    <p${params.ok ? "" : ' class="error"'}>${escapeHtml(params.message)}</p>
+    <p>You can close this page and return to the stupid vault app.</p>
+    <p><a href="/app/accounts">Back to accounts</a></p>`,
+  });
 }
 
-function renderCloudflareConnectForm(params: { state: string }): string {
-  const state = escapeHtml(params.state);
-  return `<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Connect Cloudflare</title>
-    <style>
-      body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; padding: 24px; max-width: 720px; margin: 0 auto; }
-      h1 { font-size: 20px; margin: 0 0 12px; }
-      p { color: #333; line-height: 1.4; }
-      label { display: block; margin: 12px 0 6px; font-weight: 600; }
-      input { width: 100%; padding: 10px; font-size: 14px; }
-      button { margin-top: 16px; padding: 10px 14px; font-size: 14px; }
-      .note { font-size: 13px; color: #444; }
-      code { background: #f3f3f3; padding: 2px 4px; }
-    </style>
-  </head>
-  <body>
-    <h1>Connect Cloudflare</h1>
+function cloudflareConnectFormPage(c: Context, state: string): Response {
+  return sendPage(c, {
+    title: "Connect Cloudflare",
+    nav: null,
+    body: `<h1>Connect Cloudflare</h1>
     <p>The token is encrypted to your passkey; the broker can only use it after you approve a request with your passkey.</p>
     <p class="note">Create a narrowly scoped token in Cloudflare: <code>My Profile &gt; API Tokens</code>. Wrangler commonly needs account-level Workers, KV, D1, R2, Pages, or Zone permissions depending on the command.</p>
     <form method="post" action="/v1/accounts/connect/cloudflare">
-      <input type="hidden" name="state" value="${state}" />
-      <label>Cloudflare API token</label>
-      <input name="api_token" type="password" autocomplete="off" required />
-      <label>Account ID (optional)</label>
-      <input name="account_id" type="text" autocomplete="off" />
-      <label>Account name (optional)</label>
-      <input name="account_name" type="text" autocomplete="off" />
+      <input type="hidden" name="state" value="${escapeHtml(state)}" />
+      <label>Cloudflare API token <input name="api_token" type="password" autocomplete="off" required /></label>
+      <label>Account ID (optional) <input name="account_id" type="text" autocomplete="off" /></label>
+      <label>Account name (optional) <input name="account_name" type="text" autocomplete="off" /></label>
       <button type="submit">Connect</button>
-    </form>
-  </body>
-</html>`;
+    </form>`,
+  });
 }
 
-function renderConnectResult(params: { ok: boolean; message: string }): string {
-  const msg = escapeHtml(params.message);
-  const title = params.ok ? "Connected" : "Connection failed";
-  return `<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>${escapeHtml(title)}</title>
-    <style>
-      body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; padding: 24px; max-width: 720px; margin: 0 auto; }
-      h1 { font-size: 20px; margin: 0 0 12px; }
-      p { color: #333; line-height: 1.4; }
-    </style>
-  </head>
-  <body>
-    <h1>${escapeHtml(title)}</h1>
-    <p>${msg}</p>
-    <p>You can close this page and return to the stupid vault app.</p>
-    <p><a href="/app/accounts">Back to accounts</a></p>
-  </body>
-</html>`;
-}
-
-function renderImapConnectForm(params: { state: string }): string {
-  const state = escapeHtml(params.state);
-  return `<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Connect Email (IMAP)</title>
-    <style>
-      body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; padding: 24px; max-width: 720px; margin: 0 auto; }
-      h1 { font-size: 20px; margin: 0 0 12px; }
-      p { color: #333; line-height: 1.4; }
-      label { display: block; margin: 12px 0 6px; font-weight: 600; }
-      input { width: 100%; padding: 10px; font-size: 14px; }
-      button { margin-top: 16px; padding: 10px 14px; font-size: 14px; }
-      .note { font-size: 13px; color: #444; }
-      code { background: #f3f3f3; padding: 2px 4px; }
-    </style>
-  </head>
-  <body>
-    <h1>Connect Email (read-only IMAP)</h1>
+function imapConnectFormPage(c: Context, state: string): Response {
+  return sendPage(c, {
+    title: "Connect email",
+    nav: null,
+    body: `<h1>Connect email (read-only IMAP)</h1>
     <p>Your IMAP credentials are encrypted to your passkey. Agents can only read your mail and only after you approve with your passkey — never modify or delete anything.</p>
     <p class="note">Prefer an <b>app-specific password</b> where your provider offers one (e.g. Gmail, iCloud, Outlook). The IMAP server is auto-detected from your email address.</p>
     <form method="post" action="/v1/accounts/connect/imap">
-      <input type="hidden" name="state" value="${state}" />
-      <label>Email address</label>
-      <input name="email" type="email" autocomplete="username" required />
-      <label>Password / app password</label>
-      <input name="password" type="password" autocomplete="current-password" required />
-      <label>IMAP host (optional; auto-detected when empty)</label>
-      <input name="host" type="text" autocomplete="off" placeholder="imap.example.com" />
-      <label>IMAP port (optional; default 993)</label>
-      <input name="port" type="number" autocomplete="off" placeholder="993" />
+      <input type="hidden" name="state" value="${escapeHtml(state)}" />
+      <label>Email address <input name="email" type="email" autocomplete="username" required /></label>
+      <label>Password / app password <input name="password" type="password" autocomplete="current-password" required /></label>
+      <label>IMAP host (optional; auto-detected when empty) <input name="host" type="text" autocomplete="off" placeholder="imap.example.com" /></label>
+      <label>IMAP port (optional; default 993) <input name="port" type="number" autocomplete="off" placeholder="993" /></label>
       <button type="submit">Connect</button>
-    </form>
-  </body>
-</html>`;
-}
-
-function renderImapConnectResult(params: {
-  ok: boolean;
-  message: string;
-}): string {
-  const msg = escapeHtml(params.message);
-  const title = params.ok ? "Connected" : "Connection failed";
-  return `<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>${escapeHtml(title)}</title>
-    <style>
-      body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; padding: 24px; max-width: 720px; margin: 0 auto; }
-      h1 { font-size: 20px; margin: 0 0 12px; }
-      p { color: #333; line-height: 1.4; }
-    </style>
-  </head>
-  <body>
-    <h1>${escapeHtml(title)}</h1>
-    <p>${msg}</p>
-    <p>You can close this page and return to the stupid vault app.</p>
-    <p><a href="/app/accounts">Back to accounts</a></p>
-  </body>
-</html>`;
+    </form>`,
+  });
 }
 
 async function verifyCloudflareToken(apiToken: string): Promise<string> {
@@ -264,13 +182,19 @@ accountRouter.get("/", requireApiKey, async (c) => {
 accountRouter.get("/callback/:provider", async (c) => {
   const providerId = c.req.param("provider");
   const state = c.req.query("state");
-  if (!state) return c.text("missing state", 400);
+  if (!state) {
+    return connectResultPage(c, { ok: false, message: "Missing state." });
+  }
 
   let provider: OAuthProviderConfig;
   try {
     provider = getProvider(providerId);
   } catch {
-    return c.text("unknown provider", 404);
+    return connectResultPage(c, {
+      ok: false,
+      message: "Unknown provider.",
+      status: 404,
+    });
   }
 
   if (!env.APP_BASE_URL) return c.text("APP_BASE_URL not configured", 500);
@@ -280,7 +204,12 @@ accountRouter.get("/callback/:provider", async (c) => {
     state,
     provider: providerId,
   });
-  if (!pkceVerifier) return c.text("missing pkce verifier", 400);
+  if (!pkceVerifier) {
+    return connectResultPage(c, {
+      ok: false,
+      message: "Missing PKCE verifier.",
+    });
+  }
 
   let tokenResult: Awaited<ReturnType<typeof exchangeAuthorizationCode>>;
   try {
@@ -293,7 +222,10 @@ accountRouter.get("/callback/:provider", async (c) => {
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    return c.text(`oauth exchange failed: ${msg}`, 400);
+    return connectResultPage(c, {
+      ok: false,
+      message: `OAuth exchange failed: ${msg}`,
+    });
   }
 
   await markOauthStateUsed(state);
@@ -313,10 +245,11 @@ accountRouter.get("/callback/:provider", async (c) => {
 
   const tokenToStore = refreshToken ?? accessToken;
   if (!tokenToStore && !existing) {
-    return c.text(
-      "No token returned. Try removing app access in your provider account and reconnect.",
-      400
-    );
+    return connectResultPage(c, {
+      ok: false,
+      message:
+        "No token returned. Try removing app access in your provider account and reconnect.",
+    });
   }
 
   if (tokenToStore) {
@@ -330,7 +263,11 @@ accountRouter.get("/callback/:provider", async (c) => {
       });
     } catch (err) {
       if (err instanceof CredentialError && err.code === "NOT_ENROLLED") {
-        return c.text(NOT_ENROLLED_MESSAGE, 409);
+        return connectResultPage(c, {
+          ok: false,
+          message: NOT_ENROLLED_MESSAGE,
+          status: 409,
+        });
       }
       throw err;
     }
@@ -350,36 +287,34 @@ accountRouter.get("/callback/:provider", async (c) => {
     event: { provider: providerId, scopes },
   });
 
-  return c.html(
-    renderConnectResult({
-      ok: true,
-      message: `Connected ${providerId}.`,
-    })
-  );
+  return connectResultPage(c, {
+    ok: true,
+    message: `Connected ${providerId}.`,
+  });
 });
 
 // Cloudflare API token connect (broker-hosted form; non-OAuth)
 accountRouter.get("/connect/cloudflare", async (c) => {
   const state = c.req.query("state");
-  if (!state) return c.text("missing state", 400);
+  if (!state) {
+    return connectResultPage(c, { ok: false, message: "Missing state." });
+  }
 
   try {
     const { userId } = await getConnectState({ state, provider: "cloudflare" });
     if (!(await isEnrolled(userId))) {
-      return c.html(
-        renderConnectResult({
-          ok: false,
-          message: NOT_ENROLLED_MESSAGE,
-        }),
-        409
-      );
+      return connectResultPage(c, {
+        ok: false,
+        message: NOT_ENROLLED_MESSAGE,
+        status: 409,
+      });
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    return c.html(renderConnectResult({ ok: false, message: msg }), 400);
+    return connectResultPage(c, { ok: false, message: msg, status: 400 });
   }
 
-  return c.html(renderCloudflareConnectForm({ state }));
+  return cloudflareConnectFormPage(c, state);
 });
 
 accountRouter.post("/connect/cloudflare", async (c) => {
@@ -396,10 +331,11 @@ accountRouter.post("/connect/cloudflare", async (c) => {
     typeof accountNameRaw === "string" ? accountNameRaw.trim() : "";
 
   if (!state || !apiToken) {
-    return c.html(
-      renderConnectResult({ ok: false, message: "missing fields" }),
-      400
-    );
+    return connectResultPage(c, {
+      ok: false,
+      message: "missing fields",
+      status: 400,
+    });
   }
 
   let userId: string;
@@ -407,7 +343,7 @@ accountRouter.post("/connect/cloudflare", async (c) => {
     ({ userId } = await getConnectState({ state, provider: "cloudflare" }));
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    return c.html(renderConnectResult({ ok: false, message: msg }), 400);
+    return connectResultPage(c, { ok: false, message: msg, status: 400 });
   }
 
   try {
@@ -448,37 +384,38 @@ accountRouter.post("/connect/cloudflare", async (c) => {
       event: { provider: "cloudflare", scopes },
     });
 
-    return c.html(
-      renderConnectResult({
-        ok: true,
-        message: "Cloudflare connected.",
-      })
-    );
+    return connectResultPage(c, {
+      ok: true,
+      message: "Cloudflare connected.",
+    });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    return c.html(renderConnectResult({ ok: false, message: msg }), 400);
+    return connectResultPage(c, { ok: false, message: msg, status: 400 });
   }
 });
 
 // IMAP email connect (broker-hosted form; non-OAuth, read-only)
 accountRouter.get("/connect/imap", async (c) => {
   const state = c.req.query("state");
-  if (!state) return c.text("missing state", 400);
+  if (!state) {
+    return connectResultPage(c, { ok: false, message: "Missing state." });
+  }
 
   try {
     const { userId } = await getConnectState({ state, provider: "imap" });
     if (!(await isEnrolled(userId))) {
-      return c.html(
-        renderImapConnectResult({ ok: false, message: NOT_ENROLLED_MESSAGE }),
-        409
-      );
+      return connectResultPage(c, {
+        ok: false,
+        message: NOT_ENROLLED_MESSAGE,
+        status: 409,
+      });
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    return c.html(renderImapConnectResult({ ok: false, message: msg }), 400);
+    return connectResultPage(c, { ok: false, message: msg, status: 400 });
   }
 
-  return c.html(renderImapConnectForm({ state }));
+  return imapConnectFormPage(c, state);
 });
 
 accountRouter.post("/connect/imap", async (c) => {
@@ -497,16 +434,18 @@ accountRouter.post("/connect/imap", async (c) => {
   const portInput = typeof portRaw === "string" ? portRaw.trim() : "";
 
   if (!state || !email || !password) {
-    return c.html(
-      renderImapConnectResult({ ok: false, message: "missing fields" }),
-      400
-    );
+    return connectResultPage(c, {
+      ok: false,
+      message: "missing fields",
+      status: 400,
+    });
   }
   if (!email.includes("@")) {
-    return c.html(
-      renderImapConnectResult({ ok: false, message: "invalid email address" }),
-      400
-    );
+    return connectResultPage(c, {
+      ok: false,
+      message: "invalid email address",
+      status: 400,
+    });
   }
 
   let userId: string;
@@ -514,7 +453,7 @@ accountRouter.post("/connect/imap", async (c) => {
     ({ userId } = await getConnectState({ state, provider: "imap" }));
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    return c.html(renderImapConnectResult({ ok: false, message: msg }), 400);
+    return connectResultPage(c, { ok: false, message: msg, status: 400 });
   }
 
   try {
@@ -522,10 +461,11 @@ accountRouter.post("/connect/imap", async (c) => {
     if (host) {
       const port = portInput ? Number(portInput) : 993;
       if (!Number.isInteger(port) || port < 1 || port > 65535) {
-        return c.html(
-          renderImapConnectResult({ ok: false, message: "invalid port" }),
-          400
-        );
+        return connectResultPage(c, {
+          ok: false,
+          message: "invalid port",
+          status: 400,
+        });
       }
       const secure = port !== 143;
       // Verify the manual override before storing anything.
@@ -559,14 +499,12 @@ accountRouter.post("/connect/imap", async (c) => {
       event: { provider: "imap", scopes: "read" },
     });
 
-    return c.html(
-      renderImapConnectResult({
-        ok: true,
-        message: `Email connected (${endpoint.host}).`,
-      })
-    );
+    return connectResultPage(c, {
+      ok: true,
+      message: `Email connected (${endpoint.host}).`,
+    });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    return c.html(renderImapConnectResult({ ok: false, message: msg }), 400);
+    return connectResultPage(c, { ok: false, message: msg, status: 400 });
   }
 });

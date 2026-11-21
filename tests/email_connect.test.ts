@@ -26,7 +26,7 @@ function app() {
 test("imap connect form requires a state", async () => {
   const res = await app().request("/v1/accounts/connect/imap", {});
   expect(res.status).toBe(400);
-  expect(await res.text()).toBe("missing state");
+  expect(await res.text()).toContain("Missing state.");
 });
 
 async function insertUser(telegramUserId: number): Promise<string> {
@@ -80,8 +80,13 @@ test("imap connect form renders for a valid state", async () => {
   const res = await imapFormFor(userId);
   expect(res.status).toBe(200);
   const html = await res.text();
-  expect(html).toContain("Connect Email");
+  expect(html).toContain("Connect email");
   expect(html).toContain('action="/v1/accounts/connect/imap"');
+  // Same themed shell as the app (follows the system light/dark setting).
+  expect(html).toContain("color-scheme: light dark");
+  expect(res.headers.get("content-security-policy")).toContain(
+    "form-action 'self'"
+  );
 });
 
 test("imap connect post rejects an unknown state", async () => {
