@@ -9,7 +9,13 @@ function nowIso(): string {
 export async function auditEvent(params: {
   userId?: string;
   requestId?: string;
-  actorType: "api_key" | "session" | "system" | "passkey";
+  actorType:
+    | "api_key"
+    | "session"
+    | "system"
+    | "passkey"
+    | "github_oidc"
+    | "release_session";
   actorId: string;
   eventType: string;
   event: unknown;

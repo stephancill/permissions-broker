@@ -12,6 +12,7 @@ import { emailRouter } from "./web/email";
 import { gitRouter } from "./web/git";
 import { passkeyRouter } from "./web/passkey";
 import { proxyRouter } from "./web/proxy";
+import { releaseRouter } from "./web/release";
 import { whoamiRouter } from "./web/whoami";
 
 type CreateAppOptions = {
@@ -85,6 +86,7 @@ export function createApp(options: CreateAppOptions = {}) {
   app.route("/v1/email", emailRouter);
   if (options.includeGit) app.route("/v1/git", gitRouter);
   app.route("/v1/proxy", proxyRouter);
+  app.route("/v1/release", releaseRouter);
   app.route("/v1", whoamiRouter);
 
   return app;

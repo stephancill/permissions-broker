@@ -36,6 +36,11 @@ import {
   savePushSubscription,
   vapidKeys,
 } from "../push/notify";
+import {
+  createReleasePolicy,
+  listReleasePolicies,
+  removeReleasePolicy,
+} from "../release/store";
 import { escapeHtml, POST_JSON_SCRIPT, scriptJson, sendPage } from "./pages";
 import { ENROLL_SCRIPT, isSignupAllowed, SIGNIN_SCRIPT } from "./passkey";
 
@@ -127,7 +132,7 @@ appRouter.get("/signin", async (c) => {
 // --- Inbox ---
 
 type InboxItem = {
-  kind: "proxy" | "git" | "email";
+  kind: "proxy" | "git" | "email" | "release" | "release_policy";
   id: string;
   status: string;
   created_at: string;
@@ -177,7 +182,32 @@ async function loadInbox(userId: string): Promise<InboxItem[]> {
       label: string;
     }>(userId);
 
+  const releases = await database
+    .query(
+      "SELECT id, status, created_at, approval_expires_at, repository, actor, bundle_ids_json, version, build_number FROM release_sessions WHERE user_id = ? ORDER BY created_at DESC LIMIT 30;"
+    )
+    .all<{
+      id: string;
+      status: string;
+      created_at: string;
+      approval_expires_at: string;
+      repository: string;
+      actor: string;
+      bundle_ids_json: string;
+      version: string;
+      build_number: string;
+    }>(userId);
+
   const items: InboxItem[] = [
+    ...releases.map((r) => ({
+      kind: "release" as const,
+      id: r.id,
+      status: r.status,
+      created_at: r.created_at,
+      approval_expires_at: r.approval_expires_at,
+      label: `${r.repository} (${r.actor})`,
+      summary: `TestFlight ${(JSON.parse(r.bundle_ids_json) as string[])[0]} ${r.version} (${r.build_number})`,
+    })),
     ...proxy.map((r) => {
       let where = r.upstream_url;
       try {
@@ -502,6 +532,125 @@ appRouter.post("/keys/:id/:action", requireSessionPage, async (c) => {
   return c.redirect("/app/keys", 303);
 });
 
+// --- Releases (CI release policies) ---
+
+const RELEASE_REPOSITORY = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+const RELEASE_WORKFLOW = /^\.github\/workflows\/[A-Za-z0-9_.-]+\.ya?ml$/;
+const RELEASE_REF = /^refs\/(heads|tags)\/[A-Za-z0-9_./-]+$/;
+const RELEASE_BUNDLE = /^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$/;
+
+async function renderReleasesPage(
+  c: Context,
+  error?: string
+): Promise<Response> {
+  const { userId } = c.get("webSession");
+  const policies = await listReleasePolicies(userId);
+  const rows = policies
+    .map((p) => {
+      const bundles = (JSON.parse(p.bundle_ids_json) as string[]).join(", ");
+      const pending = p.status === "PENDING_APPROVAL";
+      const action = pending
+        ? `<a href="${approvalPath({ kind: "release_policy", id: p.id })}">Confirm with passkey</a>`
+        : "";
+      return `<li><b>${escapeHtml(p.repository)}</b> · ${escapeHtml(p.workflow_path)} · ${escapeHtml(p.ref)}
+        <div class="note">${escapeHtml(bundles)}${pending ? " · waiting for confirmation" : ""}</div>
+        <div>${action}
+          <form class="inline" method="post" action="/app/releases/${escapeHtml(p.id)}/remove" data-confirm="Remove this policy? The workflow can no longer ask for releases.">
+            <button type="submit">Remove</button>
+          </form>
+        </div></li>`;
+    })
+    .join("");
+
+  const body = `
+    <h1>Releases</h1>
+    <p class="note">A GitHub Actions workflow listed here can ask to sign and upload TestFlight builds of its bundles. It authenticates with GitHub's OIDC token, and each release still needs your approval. Link an apple-release account under Accounts first.</p>
+    ${error ? `<p class="error">${escapeHtml(error)}</p>` : ""}
+    <form method="post" action="/app/releases">
+      <label>Repository <input type="text" name="repository" placeholder="owner/repo" required /></label>
+      <label>Workflow file <input type="text" name="workflow_path" placeholder=".github/workflows/testflight.yml" required /></label>
+      <label>Branch <input type="text" name="ref" value="refs/heads/main" required /></label>
+      <label>Bundle IDs (app and extensions, one per line) <textarea name="bundle_ids" rows="3" required></textarea></label>
+      <button type="submit">Add policy</button>
+    </form>
+    <h2>Policies</h2>
+    ${rows ? `<ul class="list">${rows}</ul>` : "<p>No release policies yet.</p>"}`;
+
+  const script = `
+    document.querySelectorAll("form[data-confirm]").forEach(function (f) {
+      f.addEventListener("submit", function (e) {
+        if (!confirm(f.dataset.confirm)) e.preventDefault();
+      });
+    });
+  `;
+  return sendPage(c, { title: "Releases", body, script, nav: "/app/releases" });
+}
+
+appRouter.get("/releases", requireSessionPage, async (c) =>
+  renderReleasesPage(c)
+);
+
+// Adding a policy widens what CI may do, so it is confirmed with the passkey
+// on the approval page; removing one needs only the session.
+appRouter.post("/releases", requireSessionPage, async (c) => {
+  const { userId } = c.get("webSession");
+  const form = await c.req.parseBody();
+  const text = (name: string) => {
+    const v = form[name];
+    return typeof v === "string" ? v.trim() : "";
+  };
+  const repository = text("repository");
+  const workflowPath = text("workflow_path");
+  const ref = text("ref");
+  const bundleIds = [
+    ...new Set(
+      text("bundle_ids")
+        .split(/[\s,]+/)
+        .map((b) => b.trim())
+        .filter(Boolean)
+    ),
+  ];
+  if (!RELEASE_REPOSITORY.test(repository)) {
+    return renderReleasesPage(c, "Repository must be owner/repo.");
+  }
+  if (!RELEASE_WORKFLOW.test(workflowPath)) {
+    return renderReleasesPage(
+      c,
+      "Workflow file must be .github/workflows/<name>.yml."
+    );
+  }
+  if (!RELEASE_REF.test(ref)) {
+    return renderReleasesPage(
+      c,
+      "Branch must be a full ref, e.g. refs/heads/main."
+    );
+  }
+  if (
+    bundleIds.length === 0 ||
+    bundleIds.length > 10 ||
+    !bundleIds.every((b) => RELEASE_BUNDLE.test(b))
+  ) {
+    return renderReleasesPage(
+      c,
+      "Enter one to ten exact bundle IDs (no wildcards)."
+    );
+  }
+  const id = await createReleasePolicy({
+    userId,
+    repository,
+    workflowPath,
+    ref,
+    bundleIds,
+  });
+  return c.redirect(approvalPath({ kind: "release_policy", id }), 303);
+});
+
+appRouter.post("/releases/:id/remove", requireSessionPage, async (c) => {
+  const { userId } = c.get("webSession");
+  await removeReleasePolicy({ id: c.req.param("id"), userId });
+  return c.redirect("/app/releases", 303);
+});
+
 // --- Linked accounts ---
 
 function describeMetadata(metadataJson: string | null): string {
@@ -510,8 +659,12 @@ function describeMetadata(metadataJson: string | null): string {
     const m = JSON.parse(metadataJson) as {
       imap?: { email?: string; host?: string };
       cloudflare?: { account?: { name?: string; id?: string } };
+      apple_release?: { teamId?: string; distributionCertificateId?: string };
     };
     if (m.imap?.email) return `${m.imap.email} (${m.imap.host ?? "?"})`;
+    if (m.apple_release?.teamId) {
+      return `team ${m.apple_release.teamId}, certificate ${m.apple_release.distributionCertificateId ?? "?"}`;
+    }
     const cf = m.cloudflare?.account;
     if (cf) return cf.name ?? cf.id ?? "";
   } catch {

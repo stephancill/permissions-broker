@@ -1,3 +1,4 @@
+import { parseAppleReleaseCredential } from "../apple/credential";
 // Linked-account credential storage under passkey-gated encryption.
 // See docs/PASSKEY_CREDENTIAL_ENCRYPTION.md.
 //
@@ -22,7 +23,7 @@ import {
 import { db } from "../db/client";
 import { parseCredential as parseImapCredential } from "../email/credential";
 
-export type GrantTargetKind = "proxy" | "git" | "email" | "window";
+export type GrantTargetKind = "proxy" | "git" | "email" | "window" | "release";
 
 export type CredentialErrorCode =
   | "NOT_ENROLLED"
@@ -100,6 +101,18 @@ export function deriveCredentialMetadata(params: {
         host: cred.host,
         port: cred.port,
         secure: cred.secure,
+      },
+    };
+  }
+
+  if (params.provider === "apple-release") {
+    const cred = parseAppleReleaseCredential(params.plaintext);
+    if (!cred) return null;
+    return {
+      apple_release: {
+        teamId: cred.teamId,
+        ascKeyId: cred.ascKeyId,
+        distributionCertificateId: cred.distributionCertificateId,
       },
     };
   }

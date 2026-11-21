@@ -18,6 +18,7 @@ import type { OAuthProviderConfig } from "../oauth/provider";
 import { getProvider } from "../oauth/registry";
 import { getOauthState, markOauthStateUsed } from "../oauth/state";
 import { discoverImapSettings } from "../providers/imap/discovery";
+import { registerAppleReleaseConnect } from "./appleReleaseConnect";
 
 type CloudflareAccountMetadata = {
   id: string;
@@ -35,6 +36,7 @@ const NOT_ENROLLED_MESSAGE =
   "Set up a passkey first (sign in to the stupid vault app), then reconnect.";
 
 export const accountRouter = new Hono();
+registerAppleReleaseConnect(accountRouter);
 
 function escapeHtml(s: string): string {
   return s

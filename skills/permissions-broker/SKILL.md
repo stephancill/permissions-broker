@@ -121,6 +121,14 @@ Notes:
 - Tag pushes and ref deletes are rejected.
 - Default branch pushes may be blocked unless explicitly approved.
 
+## Apple Release Sessions (CI only, separate from /v1/proxy)
+
+`/v1/release` is for GitHub Actions, not agents: a workflow authenticates with its
+GitHub OIDC token (no API key), and the run gets a session URL that `stupid-app`
+uses through `STUPID_APP_RELEASE_SESSION` to sign and upload a TestFlight build.
+The user registers the workflow and its bundle ids under Releases in the app and
+approves each run. See `docs/APPLE_RELEASE_SESSIONS.md`.
+
 ## Read-only Email (Separate from /v1/proxy)
 
 IMAP email access (`/v1/email`) is session-gated and strictly read-only.

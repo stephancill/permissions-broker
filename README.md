@@ -14,6 +14,7 @@ Passkey-controlled permissions gate + proxy API for third-party providers, with 
 - Spotify
 - Cloudflare
 - Generic IMAP email (read-only, via `/v1/email`)
+- Apple release signing: GitHub Actions runs sign and upload TestFlight builds through `/v1/release`, authenticated with GitHub OIDC, while the keys stay in the broker (`docs/APPLE_RELEASE_SESSIONS.md`)
 
 ## Agent skill
 

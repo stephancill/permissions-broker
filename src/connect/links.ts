@@ -12,13 +12,13 @@ import { createConnectState } from "./state";
 
 // Connectable providers: every proxy provider plus the form-based IMAP email
 // provider (read-only email access; not an HTTP proxy provider).
-export type ConnectableProvider = ProxyProviderId | "imap";
+export type ConnectableProvider = ProxyProviderId | "imap" | "apple-release";
 
 // Providers linked through a broker-hosted form instead of OAuth.
-const FORM_PROVIDERS = new Set<string>(["cloudflare", "imap"]);
+const FORM_PROVIDERS = new Set<string>(["cloudflare", "imap", "apple-release"]);
 
 export function listConnectableProviders(): ConnectableProvider[] {
-  return [...listProxyProviderIds(), "imap"];
+  return [...listProxyProviderIds(), "imap", "apple-release"];
 }
 
 export function isConnectableProvider(id: string): id is ConnectableProvider {

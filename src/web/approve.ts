@@ -32,17 +32,31 @@ import {
 import { getProxyProviderForUrl } from "../proxy/providerRegistry";
 import { summarizeStoredProxyRequest, truncate } from "../proxy/summary";
 import {
+  activateReleasePolicy,
+  getReleasePolicy,
+  getReleaseSession,
+  RELEASE_SESSION_MAX_MS,
+  setReleaseSessionStatus,
+} from "../release/store";
+import {
   escapeHtml,
   POST_JSON_SCRIPT,
   scriptJson,
   sendMessagePage,
   sendPage,
 } from "./pages";
+import { APPLE_RELEASE_PROVIDER } from "./release";
 
 // Session grants are wiped when the session ends; this is a hard cap.
 const SESSION_GRANT_MAX_MS = 60 * 60_000;
 
-const ApprovalKind = z.enum(["proxy", "git", "email"]);
+const ApprovalKind = z.enum([
+  "proxy",
+  "git",
+  "email",
+  "release",
+  "release_policy",
+]);
 type ApprovalKind = z.infer<typeof ApprovalKind>;
 
 const ProxyOptions = z.union([
@@ -60,6 +74,7 @@ const ProxyOptions = z.union([
 ]);
 const GitOptions = z.object({ allow_default_branch_push: z.boolean() });
 const EmailOptions = z.object({});
+const NoOptions = z.object({});
 
 type ApprovalOptions =
   | z.infer<typeof ProxyOptions>
@@ -209,6 +224,74 @@ async function loadTarget(
     };
   }
 
+  if (kind === "release") {
+    const session = await getReleaseSession(id);
+    if (!session) return null;
+    const bundleIds = JSON.parse(session.bundle_ids_json) as string[];
+    return {
+      kind,
+      id: session.id,
+      userId: session.user_id,
+      status: session.status,
+      approvalExpiresAt: session.approval_expires_at,
+      requestHash: await sha256Hex(
+        `release:${session.repository}:${session.sha}:${session.run_id}:${bundleIds.join(",")}:${session.version}:${session.build_number}`
+      ),
+      heading: "TestFlight release request",
+      apiKeyLabel: `GitHub Actions (${session.actor})`,
+      lines: [
+        ["Repository", session.repository],
+        ["Workflow", session.workflow_ref],
+        ["Commit", session.sha],
+        [
+          "Run",
+          `https://github.com/${session.repository}/actions/runs/${session.run_id}/attempts/${session.run_attempt}`,
+        ],
+        ["Bundles", bundleIds.join(", ")],
+        ["Version", `${session.version} (${session.build_number})`],
+      ],
+      details: [
+        "Signs one build of each bundle with your distribution key and lets the run upload it to App Store Connect (internal TestFlight).",
+        "The keys stay in the broker. The session ends after 45 minutes or 15 minutes without requests.",
+      ],
+      consentHint: null,
+      credentialProvider: APPLE_RELEASE_PROVIDER,
+      requesterIp: null,
+      apiKeyId: "",
+    };
+  }
+
+  if (kind === "release_policy") {
+    const policy = await getReleasePolicy(id);
+    if (!policy) return null;
+    const bundleIds = JSON.parse(policy.bundle_ids_json) as string[];
+    return {
+      kind,
+      id: policy.id,
+      userId: policy.user_id,
+      status: policy.status,
+      approvalExpiresAt: policy.approval_expires_at,
+      requestHash: await sha256Hex(
+        `release_policy:${policy.repository}:${policy.workflow_path}:${policy.ref}:${bundleIds.join(",")}`
+      ),
+      heading: "Allow CI releases",
+      apiKeyLabel: "You (Releases page)",
+      lines: [
+        ["Repository", policy.repository],
+        ["Workflow", policy.workflow_path],
+        ["Branch", policy.ref],
+        ["Bundles", bundleIds.join(", ")],
+      ],
+      details: [
+        "Lets this workflow ask for TestFlight releases of these bundles. Each release still needs your approval.",
+      ],
+      consentHint: null,
+      credentialProvider: null,
+      requesterIp: null,
+      apiKeyId: "",
+    };
+  }
+
   const row = (await database
     .query(
       "SELECT e.id, e.user_id, e.api_key_id, e.status, e.approval_expires_at, e.consent_hint, k.label AS api_key_label FROM email_sessions e JOIN api_keys k ON k.id = e.api_key_id WHERE e.id = ?;"
@@ -269,6 +352,10 @@ function parseOptions(
     }
     return p.data;
   }
+  if (target.kind === "release" || target.kind === "release_policy") {
+    const p = NoOptions.safeParse(raw);
+    return p.success ? p.data : null;
+  }
   const p = EmailOptions.safeParse(raw);
   return p.success ? p.data : null;
 }
@@ -291,11 +378,36 @@ async function markExpired(target: ApprovalTarget): Promise<void> {
 }
 
 function tableFor(kind: ApprovalKind): string {
-  return kind === "proxy"
-    ? "proxy_requests"
-    : kind === "git"
-      ? "git_sessions"
-      : "email_sessions";
+  switch (kind) {
+    case "proxy":
+      return "proxy_requests";
+    case "git":
+      return "git_sessions";
+    case "email":
+      return "email_sessions";
+    case "release":
+      return "release_sessions";
+    case "release_policy":
+      return "release_policies";
+  }
+}
+
+function eventName(
+  kind: ApprovalKind,
+  decision: "approved" | "denied"
+): string {
+  switch (kind) {
+    case "proxy":
+      return `proxy_request_${decision}`;
+    case "git":
+      return `git_session_${decision}`;
+    case "email":
+      return `email_session_${decision}`;
+    case "release":
+      return `release_session_${decision}`;
+    case "release_policy":
+      return `release_policy_${decision}`;
+  }
 }
 
 // Targets are only visible to the signed-in user who owns them.
@@ -619,12 +731,7 @@ approveRouter.post("/:kind/:id/deny", requireSessionJson, async (c) => {
     requestId: target.kind === "proxy" ? target.id : undefined,
     actorType: "session",
     actorId: sessionId,
-    eventType:
-      target.kind === "proxy"
-        ? "proxy_request_denied"
-        : target.kind === "git"
-          ? "git_session_denied"
-          : "email_session_denied",
+    eventType: eventName(target.kind, "denied"),
     event: { target_id: target.id },
   });
 
@@ -693,6 +800,20 @@ approveRouter.post("/:kind/:id", requireSessionJson, async (c) => {
       })
     : null;
 
+  // A release needs its credential: without one there is nothing to sign with.
+  if (target.kind === "release" && !account) {
+    return c.json(
+      {
+        error: "no_linked_apple_release",
+        message: "Link an Apple release credential first.",
+      },
+      409
+    );
+  }
+  const releaseExpiresAt = new Date(
+    Date.now() + RELEASE_SESSION_MAX_MS
+  ).toISOString();
+
   let grantId: string | null = null;
   let windowId: string | null = null;
   let windowExpiresAt: string | null = null;
@@ -715,12 +836,15 @@ approveRouter.post("/:kind/:id", requireSessionJson, async (c) => {
         400
       );
     }
-    const targetKind: GrantTargetKind = windowId ? "window" : target.kind;
+    // Only kinds with a credential reach here (release policies have none).
+    const targetKind = (windowId ? "window" : target.kind) as GrantTargetKind;
     const grantExpiresAt =
       windowExpiresAt ??
       (target.kind === "proxy"
         ? target.approvalExpiresAt
-        : new Date(Date.now() + SESSION_GRANT_MAX_MS).toISOString());
+        : target.kind === "release"
+          ? releaseExpiresAt
+          : new Date(Date.now() + SESSION_GRANT_MAX_MS).toISOString());
     try {
       ({ grantId } = await createGrant({
         userId: target.userId,
@@ -761,6 +885,22 @@ approveRouter.post("/:kind/:id", requireSessionJson, async (c) => {
       )
       .run(allowDefault ? 1 : 0, now, target.id);
     changes = res.changes ?? 0;
+  } else if (target.kind === "release") {
+    changes = (await setReleaseSessionStatus({
+      id: target.id,
+      from: ["PENDING_APPROVAL"],
+      status: "APPROVED",
+      expiresAt: releaseExpiresAt,
+    }))
+      ? 1
+      : 0;
+  } else if (target.kind === "release_policy") {
+    changes = (await activateReleasePolicy({
+      id: target.id,
+      userId: target.userId,
+    }))
+      ? 1
+      : 0;
   } else {
     const res = await database
       .query(
@@ -801,12 +941,7 @@ approveRouter.post("/:kind/:id", requireSessionJson, async (c) => {
     requestId: target.kind === "proxy" ? target.id : undefined,
     actorType: "passkey",
     actorId: assertion.id,
-    eventType:
-      target.kind === "proxy"
-        ? "proxy_request_approved"
-        : target.kind === "git"
-          ? "git_session_approved"
-          : "email_session_approved",
+    eventType: eventName(target.kind, "approved"),
     event: {
       target_id: target.id,
       request_hash: target.requestHash,

@@ -73,6 +73,7 @@ Formatting/linting uses Biome.
   - `src/web/proxy.ts`: create/poll/execute proxy requests
   - `src/web/git.ts`: git session APIs + smart-HTTP proxy
   - `src/web/email.ts`: read-only email session APIs (generic IMAP)
+  - `src/web/release.ts`: Apple release sessions for CI (GitHub OIDC, ASC proxy, code signing); `src/web/appleReleaseConnect.ts`: the `apple-release` connect form
   - `src/web/accounts.ts`: OAuth callback + list accounts
   - `src/web/passkey.ts`, `src/web/approve.ts`: passkey enrollment and approval pages
 - `src/web/app.ts`: PWA pages (inbox, API keys, accounts, settings), push subscribe, manifest + service worker
@@ -83,6 +84,8 @@ Formatting/linting uses Biome.
 - `public/`: PWA icons (Workers assets binding; `serveStatic` under Bun)
 - `src/oauth/`: generic OAuth flow + state handling
 - `src/email/`: read-only IMAP client, session persistence, curated ops
+- `src/release/`: release policies and sessions, GitHub OIDC verification, the App Store Connect allowlist
+- `src/apple/`: `apple-release` credential, ASC JWT, DER and CodeDirectory parsing, signing checks
 - `src/providers/<provider>/`:
   - `oauth.ts`: OAuth provider config
   - `proxy.ts`: proxy-provider implementation (host allowlist, token handling, interpretation)
