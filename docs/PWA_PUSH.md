@@ -81,6 +81,10 @@ prompts.
   `src/server.ts` for Bun).
 - Page CSP: nonce scripts/styles, `connect-src 'self'`, `manifest-src 'self'`,
   `worker-src 'self'`, `img-src 'self'`, `form-action 'self'`.
+- The Requests tab always shows relative times ("5 min ago", "3 months ago"),
+  never a date. `fmtRelative` renders them server-side in a
+  `<time datetime title="<UTC time>">`; an inline script with the same rules
+  re-renders them every 30 s.
 
 ## Schema (migration 0014)
 

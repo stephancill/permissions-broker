@@ -54,6 +54,56 @@ function fmtTime(iso: string | null): string {
   return `${iso.slice(0, 16).replace("T", " ")} UTC`;
 }
 
+// Relative age ("5 min ago") at every distance, never switching to a date.
+// The same rules run client-side (RELATIVE_TIME_SCRIPT) to keep it current.
+export function fmtRelative(params: { iso: string; now: number }): string {
+  const s = Math.max(
+    0,
+    Math.round((params.now - Date.parse(params.iso)) / 1000)
+  );
+  if (s < 60) return "just now";
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m} min ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h} h ago`;
+  const d = Math.floor(h / 24);
+  if (d < 30) return `${d} ${d === 1 ? "day" : "days"} ago`;
+  if (d < 365) {
+    const mo = Math.floor(d / 30);
+    return `${mo} ${mo === 1 ? "month" : "months"} ago`;
+  }
+  const y = Math.floor(d / 365);
+  return `${y} ${y === 1 ? "year" : "years"} ago`;
+}
+
+function relativeTimeTag(iso: string): string {
+  return `<time datetime="${escapeHtml(iso)}" title="${escapeHtml(fmtTime(iso))}">${escapeHtml(
+    fmtRelative({ iso, now: Date.now() })
+  )}</time>`;
+}
+
+const RELATIVE_TIME_SCRIPT = `
+  function fmtRelative(iso) {
+    var s = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000));
+    if (s < 60) return "just now";
+    var m = Math.floor(s / 60);
+    if (m < 60) return m + " min ago";
+    var h = Math.floor(m / 60);
+    if (h < 24) return h + " h ago";
+    var d = Math.floor(h / 24);
+    if (d < 30) return d + (d === 1 ? " day" : " days") + " ago";
+    if (d < 365) { var mo = Math.floor(d / 30); return mo + (mo === 1 ? " month" : " months") + " ago"; }
+    var y = Math.floor(d / 365);
+    return y + (y === 1 ? " year" : " years") + " ago";
+  }
+  function refreshTimes() {
+    var els = document.querySelectorAll("time[datetime]");
+    for (var i = 0; i < els.length; i++) els[i].textContent = fmtRelative(els[i].getAttribute("datetime"));
+  }
+  refreshTimes();
+  setInterval(refreshTimes, 30000);
+`;
+
 // Only same-origin relative paths are valid post-sign-in destinations.
 function safeNext(raw: string | undefined): string {
   if (!raw || !raw.startsWith("/") || raw.startsWith("//")) return "/app";
@@ -257,7 +307,7 @@ function isActionable(item: InboxItem): boolean {
 
 function renderInboxItem(item: InboxItem): string {
   const text = `<b>${escapeHtml(item.label)}</b>: ${escapeHtml(item.summary)}`;
-  const meta = `<div class="note">${fmtTime(item.created_at)}${
+  const meta = `<div class="note">${relativeTimeTag(item.created_at)}${
     isActionable(item) ? "" : ` · ${escapeHtml(item.status)}`
   }</div>`;
   return isActionable(item)
@@ -374,6 +424,7 @@ appRouter.get("/", requireSessionPage, async (c) => {
     ${vapidKeyScript()}
     ${POST_JSON_SCRIPT}
     ${PUSH_SCRIPT}
+    ${RELATIVE_TIME_SCRIPT}
     // Refresh the inbox when the app comes back to the foreground.
     var hiddenAt = 0;
     document.addEventListener("visibilitychange", function () {
