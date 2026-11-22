@@ -654,6 +654,20 @@ test("API keys are created in the app and shown once", async () => {
     '<header class="app"><a href="/app">stupid vault</a></header><nav>'
   );
   expect(list).not.toContain(key as string);
+
+  // Revoked keys move into a collapsed section below the active ones.
+  const id = list.match(/action="\/app\/keys\/([^/"]+)\/revoke"/)?.[1];
+  expect(id).toBeDefined();
+  const revoke = await app.request(`/app/keys/${id}/revoke`, {
+    method: "POST",
+    headers: { origin: ORIGIN, cookie: account.cookie },
+  });
+  expect(revoke.status).toBeLessThan(400);
+  const after = await (await getPage("/app/keys", account.cookie)).text();
+  expect(after).toContain("<p>No active API keys.</p>");
+  expect(after).toMatch(
+    /<details>\s*<summary>Revoked \(1\)<\/summary>[\s\S]*laptop agent[\s\S]*<\/details>/
+  );
 });
 
 test("approval window auto-approves the endpoint and survives rotation", async () => {

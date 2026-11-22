@@ -458,12 +458,11 @@ function renderKeysPage(
     ? `<p class="error">${escapeHtml(params.error)}</p>`
     : "";
 
-  const rows = params.keys
-    .map((k) => {
-      const id = escapeHtml(k.id);
-      const actions = k.revoked_at
-        ? ""
-        : `<details><summary>Manage</summary>
+  const renderKey = (k: (typeof params.keys)[number]): string => {
+    const id = escapeHtml(k.id);
+    const actions = k.revoked_at
+      ? ""
+      : `<details><summary>Manage</summary>
             <form method="post" action="/app/keys/${id}/rename">
               <label>New label <input type="text" name="label" value="${escapeHtml(k.label)}" maxlength="64" required /></label>
               <button type="submit">Rename</button>
@@ -475,11 +474,21 @@ function renderKeysPage(
               <button type="submit">Revoke</button>
             </form>
           </details>`;
-      return `<li><b>${escapeHtml(k.label)}</b>${k.revoked_at ? " (revoked)" : ""}
-        <div class="note">Created ${fmtTime(k.created_at)} · last used ${fmtTime(k.last_used_at)}</div>
+    const revokedNote = k.revoked_at
+      ? ` · revoked ${fmtTime(k.revoked_at)}`
+      : "";
+    return `<li><b>${escapeHtml(k.label)}</b>
+        <div class="note">Created ${fmtTime(k.created_at)} · last used ${fmtTime(k.last_used_at)}${revokedNote}</div>
         ${actions}</li>`;
-    })
-    .join("");
+  };
+  const active = params.keys.filter((k) => !k.revoked_at);
+  const revoked = params.keys.filter((k) => k.revoked_at);
+  const revokedSection = revoked.length
+    ? `<details>
+        <summary>Revoked (${revoked.length})</summary>
+        <ul class="list">${revoked.map(renderKey).join("")}</ul>
+      </details>`
+    : "";
 
   const body = `
     <h1>API keys</h1>
@@ -490,8 +499,13 @@ function renderKeysPage(
       <label>Label <input type="text" name="label" placeholder="e.g. laptop agent" maxlength="64" required /></label>
       <button type="submit">Create API key</button>
     </form>
-    <h2>Your keys</h2>
-    ${rows ? `<ul class="list">${rows}</ul>` : "<p>No API keys yet.</p>"}`;
+    <h2>Active keys</h2>
+    ${
+      active.length
+        ? `<ul class="list">${active.map(renderKey).join("")}</ul>`
+        : "<p>No active API keys.</p>"
+    }
+    ${revokedSection}`;
 
   const script = `
     document.querySelectorAll("form[data-confirm]").forEach(function (f) {
