@@ -746,8 +746,6 @@ appRouter.get("/accounts", requireSessionPage, async (c) => {
       const active = r?.status === "active";
       const detail = active
         ? `<div class="note">Connected ${fmtTime(r.created_at)}${
-            r.scopes ? ` · scopes: ${escapeHtml(r.scopes)}` : ""
-          }${
             describeMetadata(r.metadata_json)
               ? ` · ${escapeHtml(describeMetadata(r.metadata_json))}`
               : ""
