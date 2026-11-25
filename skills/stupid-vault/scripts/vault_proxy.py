@@ -2,17 +2,18 @@
 from __future__ import annotations
 
 import json
-import os
 import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
-USER_AGENT = "permissions-broker-cli/1.0"
-DEFAULT_BASE_URL = "https://vault.stupidtech.net"
+from vault_auth import CredentialsError, load_credentials
+
+USER_AGENT = "stupid-vault-cli/1.0"
 
 
 def eprint(*args: object) -> None:
@@ -20,20 +21,21 @@ def eprint(*args: object) -> None:
 
 
 def usage() -> str:
-    return """pb_proxy.py - curl-like broker proxy CLI
+    return """vault_proxy.py - curl-like broker proxy CLI
 
 Usage:
-  pb_proxy.py [pb options] [curl options] <upstream_url>
+  vault_proxy.py [options] [curl options] <upstream_url>
 
-PB options:
-  --pb-timeout-seconds <n>     Approval polling timeout in seconds (default: 30)
-  --pb-poll-interval <n>       Poll interval in seconds (default: 1)
-  --pb-consent-hint <text>     Consent hint shown on the approval request
-  --pb-idempotency-key <key>   Idempotency key for create request
-  --pb-base-url <url>          Broker URL (default: https://vault.stupidtech.net)
+Options:
+  --approval-timeout <n>       Approval polling timeout in seconds (default: 30)
+  --poll-interval <n>          Poll interval in seconds (default: 1)
+  --consent-hint <text>        Consent hint shown on the approval request
+  --idempotency-key <key>      Idempotency key for create request
+  --credentials <path>         Credentials file
+                               (default: ~/.config/stupid-vault/credentials.json)
   -h, --help                   Show this help
 
-Requires $PB_API_KEY (Permissions Broker API key) in the environment.
+Sign in first with: vault_auth.py login
 
 Curl options supported:
   -X, --request <method>
@@ -59,7 +61,8 @@ def pop_value(argv: list[str], i: int, flag: str) -> tuple[str, int]:
 
 @dataclass
 class PbConfig:
-    api_key: str | None
+    credentials_path: Path | None
+    api_key: str
     base_url: str
     timeout_seconds: float
     poll_interval_seconds: float
@@ -77,8 +80,9 @@ class CurlInput:
 
 def parse_pb_options(argv: list[str]) -> tuple[PbConfig, list[str]]:
     cfg = PbConfig(
-        api_key=os.environ.get("PB_API_KEY"),
-        base_url=os.environ.get("PB_BASE_URL", DEFAULT_BASE_URL),
+        credentials_path=None,
+        api_key="",
+        base_url="",
         timeout_seconds=30,
         poll_interval_seconds=1,
         consent_hint=None,
@@ -92,22 +96,23 @@ def parse_pb_options(argv: list[str]) -> tuple[PbConfig, list[str]]:
         if arg in ("-h", "--help"):
             print(usage())
             raise SystemExit(0)
-        if arg == "--pb-timeout-seconds":
+        if arg == "--approval-timeout":
             v, i = pop_value(argv, i, arg)
             cfg.timeout_seconds = float(v)
             continue
-        if arg == "--pb-poll-interval":
+        if arg == "--poll-interval":
             v, i = pop_value(argv, i, arg)
             cfg.poll_interval_seconds = float(v)
             continue
-        if arg == "--pb-consent-hint":
+        if arg == "--consent-hint":
             cfg.consent_hint, i = pop_value(argv, i, arg)
             continue
-        if arg == "--pb-idempotency-key":
+        if arg == "--idempotency-key":
             cfg.idempotency_key, i = pop_value(argv, i, arg)
             continue
-        if arg == "--pb-base-url":
-            cfg.base_url, i = pop_value(argv, i, arg)
+        if arg == "--credentials":
+            v, i = pop_value(argv, i, arg)
+            cfg.credentials_path = Path(v).expanduser()
             continue
 
         curl_args.append(arg)
@@ -312,10 +317,13 @@ def main() -> int:
             return code
         return 0
 
-    if not pb_cfg.api_key:
-        eprint("missing API key: set PB_API_KEY in the environment")
-        eprint("Run with --help for usage.")
+    try:
+        creds = load_credentials(pb_cfg.credentials_path)
+    except CredentialsError as err:
+        eprint(str(err))
         return 12
+    pb_cfg.api_key = creds.api_key
+    pb_cfg.base_url = creds.base_url
 
     consent_hint = pb_cfg.consent_hint
     if not consent_hint:

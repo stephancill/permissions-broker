@@ -18,9 +18,11 @@ Passkey-controlled permissions gate + proxy API for third-party providers, with 
 
 ## Agent skill
 
-- Skill definition (for agent integrations): `skills/permissions-broker/SKILL.md`
+- Skill definition (for agent integrations): `skills/stupid-vault/SKILL.md`
 
-When self-hosting, update the skill definition to point to your own broker instance.
+Agents sign in with `python3 skills/stupid-vault/scripts/vault_auth.py login` (OAuth 2.0 device flow; the user approves a code in the app) and the key is stored in `~/.config/stupid-vault/credentials.json`. See `docs/DEVICE_AUTHORIZATION.md`.
+
+When self-hosting, sign in with `vault_auth.py login --base-url <your broker>`; the scripts use the broker URL stored with the credential.
 
 ## Self-hosting
 
@@ -106,7 +108,7 @@ Everything the user does happens in the stupid vault PWA at `/app` (installable;
 
 - **Sign in** with the passkey (usernameless). The first visit on an empty broker offers **Create account**, which creates the passkey that encrypts linked accounts.
 - **Requests**: pending requests (tap to review) and recent decisions. Approve with the passkey or Deny.
-- **API keys**: create (shown once), rename, rotate, revoke.
+- **API keys**: create (shown once), rename, rotate, revoke. CLIs can instead get a key through device sign-in (`/device`: enter or confirm the code the CLI shows, then approve).
 - **Accounts**: connect/disconnect Google, GitHub, Spotify and Cloudflare (OAuth) and IMAP email (read-only form).
 - **Settings**: enable notifications on this device, list/remove devices, send a test push, replace the passkey, sign out.
 
@@ -130,6 +132,7 @@ Endpoints:
 - `POST /v1/email/sessions/:id/read` (read a message by UID; read-only)
 - `GET /v1/accounts/` (list linked/connected provider accounts for the authenticated user)
 - `GET /v1/whoami` (debug: verify API key auth)
+- `POST /v1/device/authorize`, `POST /v1/device/token` (no auth; RFC 8628 device flow that issues an API key, see `docs/DEVICE_AUTHORIZATION.md`)
 
 Email access details: `docs/EMAIL_IMAP.md`
 

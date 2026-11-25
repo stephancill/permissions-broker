@@ -1,18 +1,37 @@
 ---
-name: permissions-broker
-description: Use the Permissions Broker for approval-gated external API access, Git smart-HTTP operations, and read-only email access when local credentials are unavailable or not desired. Use the bundled Python CLI at skills/permissions-broker/scripts/pb_proxy.py for proxy requests (create, poll, execute) instead of hand-writing polling logic. Supports Google, GitHub, Spotify, Cloudflare, and generic IMAP email (read-only).
+name: stupid-vault
+description: Use stupid vault (the user's credential broker) for approval-gated external API access, Git smart-HTTP operations, and read-only email access when local credentials are unavailable or not desired. Use the bundled Python CLI at scripts/vault_proxy.py for proxy requests (create, poll, execute) instead of hand-writing polling logic. Supports Google, GitHub, Spotify, Cloudflare, and generic IMAP email (read-only).
 ---
 
-# Permissions Broker
+# stupid vault
 
 ## Setup
 
-1. Check for `PB_API_KEY` in local secrets.
-2. If missing, ask the user to create one in the stupid vault app
-   (`<broker>/app/keys` → enter a label → Create API key; it is shown once).
+`<skill-dir>` in the commands below is the directory containing this SKILL.md.
 
-3. Ask whether to store/reuse across sessions.
-4. Never print or commit the API key.
+The scripts read their credential (broker URL + API key) from
+`~/.config/stupid-vault/credentials.json` (`$XDG_CONFIG_HOME/stupid-vault/`
+if set). Pass `--credentials <path>` to any script to use a different file.
+
+1. Check whether you're signed in:
+
+   ```bash
+   python3 <skill-dir>/scripts/vault_auth.py status
+   ```
+
+2. If not, sign in with the device flow:
+
+   ```bash
+   python3 <skill-dir>/scripts/vault_auth.py login --label "<agent> on <machine>"
+   ```
+
+   It prints a URL and a code. Show both to the user right away: they open the URL
+   (signed in to the app), check the code matches, adjust the key label if they like
+   and approve. The command waits (up to 10 minutes) and saves the new key with mode
+   0600. Run it in the background if your shell tool times out sooner.
+   Exit codes: `0` signed in, `10` code expired, `11` denied, `12` error.
+
+3. Never print, copy or commit the credentials file or the key inside it.
 
 Provider linking is done by the user in the app under **Accounts** (`<broker>/app/accounts`).
 
@@ -29,7 +48,7 @@ Use the broker as the default mechanism for external requests.
 
 Preferred script:
 
-- `skills/permissions-broker/scripts/pb_proxy.py`
+- `<skill-dir>/scripts/vault_proxy.py`
 
 This script handles the full flow for `/v1/proxy`:
 
@@ -39,16 +58,14 @@ This script handles the full flow for `/v1/proxy`:
 
 ### Required Inputs
 
-- `PB_API_KEY` env var (required; the CLI fails loudly if it is unset)
+- A stored credential (see Setup; the CLI fails loudly with the next step if it's missing)
 - Curl-like request args (URL + optional `-X`, `-H`, `-d`, `-G`)
-
-The CLI uses `https://vault.stupidtech.net` by default.
 
 ### Example
 
 ```bash
-python3 skills/permissions-broker/scripts/pb_proxy.py \
-  --pb-timeout-seconds 30 \
+python3 <skill-dir>/scripts/vault_proxy.py \
+  --approval-timeout 30 \
   "https://www.googleapis.com/drive/v3/files?pageSize=5&fields=files(id,name)"
 ```
 
@@ -70,12 +87,12 @@ Common curl-style examples:
 
 ```bash
 # GET with headers
-python3 skills/permissions-broker/scripts/pb_proxy.py \
+python3 <skill-dir>/scripts/vault_proxy.py \
   -H "accept: application/vnd.github+json" \
   "https://api.github.com/user"
 
 # POST JSON
-python3 skills/permissions-broker/scripts/pb_proxy.py \
+python3 <skill-dir>/scripts/vault_proxy.py \
   -X POST \
   -H "content-type: application/json" \
   -d '{"title":"Hello"}' \
@@ -97,7 +114,7 @@ For unsupported hosts, explain that provider support must be added first.
 
 Use the bundled git-like CLI:
 
-- `skills/permissions-broker/scripts/pb_git.py`
+- `<skill-dir>/scripts/vault_git.py`
 
 It is a drop-in wrapper for these workflows:
 
@@ -109,10 +126,10 @@ It is a drop-in wrapper for these workflows:
 Examples:
 
 ```bash
-python3 skills/permissions-broker/scripts/pb_git.py clone https://github.com/OWNER/REPO.git
-python3 skills/permissions-broker/scripts/pb_git.py fetch origin --prune
-python3 skills/permissions-broker/scripts/pb_git.py pull origin main
-python3 skills/permissions-broker/scripts/pb_git.py push origin HEAD:refs/heads/feature-x
+python3 <skill-dir>/scripts/vault_git.py clone https://github.com/OWNER/REPO.git
+python3 <skill-dir>/scripts/vault_git.py fetch origin --prune
+python3 <skill-dir>/scripts/vault_git.py pull origin main
+python3 <skill-dir>/scripts/vault_git.py push origin HEAD:refs/heads/feature-x
 ```
 
 Notes:
@@ -141,20 +158,26 @@ Flow:
 3. Poll until the user approves in the app: `GET /v1/email/sessions/:id`.
 4. Once `APPROVED`/`ACTIVE`, run read-only operations within the session window:
 
+Raw API calls take the stored credential through `vault_auth.py` (the header goes
+straight to curl, so the key never appears in your output):
+
 ```bash
+VAULT_AUTH="<skill-dir>/scripts/vault_auth.py"
+VAULT_BASE=$(python3 $VAULT_AUTH base-url)
+
 # list mailboxes
-curl -H "Authorization: Bearer $PB_API_KEY" \
-  $PB_BASE/v1/email/sessions/$SESSION_ID/folders
+curl -H @<(python3 $VAULT_AUTH header) \
+  $VAULT_BASE/v1/email/sessions/$SESSION_ID/folders
 
 # search (curated filters only)
-curl -X POST -H "Authorization: Bearer $PB_API_KEY" -H "content-type: application/json" \
+curl -X POST -H @<(python3 $VAULT_AUTH header) -H "content-type: application/json" \
   -d '{"mailbox":"INBOX","query":{"subject":"invoice","unseen":true}}' \
-  $PB_BASE/v1/email/sessions/$SESSION_ID/search
+  $VAULT_BASE/v1/email/sessions/$SESSION_ID/search
 
 # read a message (uid from search)
-curl -X POST -H "Authorization: Bearer $PB_API_KEY" -H "content-type: application/json" \
+curl -X POST -H @<(python3 $VAULT_AUTH header) -H "content-type: application/json" \
   -d '{"mailbox":"INBOX","uid":123,"parts":{"text":true}}' \
-  $PB_BASE/v1/email/sessions/$SESSION_ID/read
+  $VAULT_BASE/v1/email/sessions/$SESSION_ID/read
 ```
 
 Rules:
@@ -167,11 +190,11 @@ Rules:
 
 ## Security Rules
 
-- Treat API keys and OAuth-linked access as sensitive.
+- Treat API keys, the credentials file and OAuth-linked access as sensitive.
 - Do not log secrets.
 - Do not commit secrets.
 - Use narrow upstream reads to keep approvals clear and responses small.
 
 ## Resources
 
-- `skills/permissions-broker/references/api_reference.md`
+- `<skill-dir>/references/api_reference.md`

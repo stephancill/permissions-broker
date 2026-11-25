@@ -79,6 +79,7 @@ Formatting/linting uses Biome.
 - `src/web/app.ts`: PWA pages (inbox, API keys, accounts, settings), push subscribe, manifest + service worker
 - `src/auth/session.ts`: passkey-created browser sessions (cookie), same-origin write checks
 - `src/auth/apiKeyAdmin.ts`: API key create/rename/rotate/revoke
+- `src/auth/device.ts`, `src/web/device.ts`: RFC 8628 device sign-in that issues API keys (approval page in `src/web/app.ts`, see `docs/DEVICE_AUTHORIZATION.md`)
 - `src/connect/links.ts`: OAuth/connect-form link creation, provider list
 - `src/push/`: Web Push (VAPID + RFC 8291 encryption on WebCrypto) and per-user fan-out
 - `public/`: PWA icons (Workers assets binding; `serveStatic` under Bun)
@@ -95,7 +96,7 @@ Formatting/linting uses Biome.
   - `requests.ts`: proxy request persistence + hashing
   - `interpret.ts`: delegates to provider interpretability
 - `migrations/`: SQLite schema migrations
-- `skills/permissions-broker/`: agent skill + reference docs
+- `skills/stupid-vault/`: agent skill + reference docs
 
 ## Core Concepts
 
@@ -104,6 +105,12 @@ Formatting/linting uses Biome.
 - Clients authenticate to the broker via `Authorization: Bearer <pb_...>`.
 - The API key label is the identity shown to the user in push notifications and approval pages.
 - Do not accept "caller_label" or similar identity claims in request bodies.
+
+### Device sign-in and the skill credential
+
+- Agents get keys via `skills/stupid-vault/scripts/vault_auth.py login` (device flow).
+- The skill scripts read only the credentials file (`~/.config/stupid-vault/credentials.json`,
+  override `--credentials`); don't reintroduce env-var configuration in the skill.
 
 ### Proxy request lifecycle (`/v1/proxy`)
 
@@ -135,7 +142,7 @@ To add a new provider:
 3. Register provider in:
    - `src/oauth/registry.ts` (OAuth)
    - `src/proxy/providerRegistry.ts` (proxy)
-4. Update docs in `skills/permissions-broker/` as needed
+4. Update docs in `skills/stupid-vault/` as needed
 5. Add/adjust tests
 
 ### Git session lifecycle (`/v1/git`)
@@ -208,8 +215,8 @@ See `docs/PWA_PUSH.md`.
 
 ## Docs to Keep Updated
 
-- `skills/permissions-broker/SKILL.md`
-- `skills/permissions-broker/references/api_reference.md`
+- `skills/stupid-vault/SKILL.md`
+- `skills/stupid-vault/references/api_reference.md`
 - `README.md`
 - `docs/*.md` when adding major features
 - `AGENTS.md` when for documenting code style, conventions, contribution guidelines

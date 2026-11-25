@@ -8,6 +8,7 @@ import {
 import { accountRouter } from "./web/accounts";
 import { appRouter, MANIFEST, SERVICE_WORKER_JS } from "./web/app";
 import { approveRouter } from "./web/approve";
+import { deviceRouter } from "./web/device";
 import { emailRouter } from "./web/email";
 import { gitRouter } from "./web/git";
 import { passkeyRouter } from "./web/passkey";
@@ -81,8 +82,14 @@ export function createApp(options: CreateAppOptions = {}) {
   app.route("/app", appRouter);
   app.route("/passkey", passkeyRouter);
   app.route("/approve", approveRouter);
+  // RFC 8628 verification_uri: short to type, lands on the app page.
+  app.get("/device", (c) => {
+    const search = new URL(c.req.url).search;
+    return c.redirect(`/app/device${search}`, 302);
+  });
 
   app.route("/v1/accounts", accountRouter);
+  app.route("/v1/device", deviceRouter);
   app.route("/v1/email", emailRouter);
   if (options.includeGit) app.route("/v1/git", gitRouter);
   app.route("/v1/proxy", proxyRouter);

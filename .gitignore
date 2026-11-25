@@ -22,3 +22,4 @@ data/
 
 # Local Wrangler/Miniflare state
 .wrangler/
+__pycache__/

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 import subprocess
 import sys
@@ -11,10 +10,12 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
-DEFAULT_BASE_URL = "https://vault.stupidtech.net"
-USER_AGENT = "permissions-broker-git-cli/1.0"
+from vault_auth import CredentialsError, load_credentials
+
+USER_AGENT = "stupid-vault-git-cli/1.0"
 SUPPORTED = {"clone", "fetch", "pull", "push"}
 
 
@@ -23,25 +24,25 @@ def eprint(*args: object) -> None:
 
 
 def usage() -> str:
-    return """pb_git.py - git-like CLI via Permissions Broker
+    return """vault_git.py - git-like CLI via stupid vault
 
 Usage:
-  pb_git.py [pb options] <clone|fetch|pull|push> [git args...]
+  vault_git.py [options] <clone|fetch|pull|push> [git args...]
 
-Requires:
-  $PB_API_KEY                  Permissions Broker API key (env var)
+Sign in first with: vault_auth.py login
 
-PB options:
-  --pb-base-url <url>          Broker base URL (default: https://vault.stupidtech.net)
-  --pb-timeout-seconds <n>     Approval polling timeout in seconds (default: 90)
-  --pb-poll-interval <n>       Poll interval in seconds (default: 1)
-  --pb-consent-hint <text>     Consent hint shown on the approval request
+Options:
+  --credentials <path>         Credentials file
+                               (default: ~/.config/stupid-vault/credentials.json)
+  --approval-timeout <n>       Approval polling timeout in seconds (default: 90)
+  --poll-interval <n>          Poll interval in seconds (default: 1)
+  --consent-hint <text>        Consent hint shown on the approval request
 
 Examples:
-  pb_git.py clone https://github.com/OWNER/REPO.git
-  pb_git.py fetch origin --prune
-  pb_git.py pull origin main
-  pb_git.py push origin HEAD:refs/heads/my-branch
+  vault_git.py clone https://github.com/OWNER/REPO.git
+  vault_git.py fetch origin --prune
+  vault_git.py pull origin main
+  vault_git.py push origin HEAD:refs/heads/my-branch
 """
 
 
@@ -53,7 +54,8 @@ def pop_value(argv: list[str], i: int, flag: str) -> tuple[str, int]:
 
 @dataclass
 class PbConfig:
-    api_key: str | None
+    credentials_path: Path | None
+    api_key: str
     base_url: str
     timeout_seconds: float
     poll_interval_seconds: float
@@ -62,8 +64,9 @@ class PbConfig:
 
 def parse_pb_options(argv: list[str]) -> tuple[PbConfig, list[str]]:
     cfg = PbConfig(
-        api_key=os.environ.get("PB_API_KEY"),
-        base_url=os.environ.get("PB_BASE_URL", DEFAULT_BASE_URL),
+        credentials_path=None,
+        api_key="",
+        base_url="",
         timeout_seconds=90,
         poll_interval_seconds=1,
         consent_hint=None,
@@ -76,18 +79,19 @@ def parse_pb_options(argv: list[str]) -> tuple[PbConfig, list[str]]:
         if arg in ("-h", "--help"):
             print(usage())
             raise SystemExit(0)
-        if arg == "--pb-base-url":
-            cfg.base_url, i = pop_value(argv, i, arg)
+        if arg == "--credentials":
+            v, i = pop_value(argv, i, arg)
+            cfg.credentials_path = Path(v).expanduser()
             continue
-        if arg == "--pb-timeout-seconds":
+        if arg == "--approval-timeout":
             v, i = pop_value(argv, i, arg)
             cfg.timeout_seconds = float(v)
             continue
-        if arg == "--pb-poll-interval":
+        if arg == "--poll-interval":
             v, i = pop_value(argv, i, arg)
             cfg.poll_interval_seconds = float(v)
             continue
-        if arg == "--pb-consent-hint":
+        if arg == "--consent-hint":
             cfg.consent_hint, i = pop_value(argv, i, arg)
             continue
         rest.append(arg)
@@ -304,10 +308,13 @@ def main() -> int:
             return code
         return 0
 
-    if not cfg.api_key:
-        eprint("missing API key: set PB_API_KEY in the environment")
-        eprint("Run with --help for usage.")
+    try:
+        creds = load_credentials(cfg.credentials_path)
+    except CredentialsError as err:
+        eprint(str(err))
         return 12
+    cfg.api_key = creds.api_key
+    cfg.base_url = creds.base_url
     if not rest:
         eprint("missing git subcommand")
         eprint("Run with --help for usage.")

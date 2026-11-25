@@ -1,4 +1,4 @@
-# Permissions Broker - Agent Reference
+# stupid vault - Agent Reference
 
 Keep this file as a quick reference for how an agent should call the broker.
 
@@ -9,7 +9,18 @@ Base URL: the broker service URL `https://vault.stupidtech.net`.
 Auth
 
 - Header: `Authorization: Bearer <USER_API_KEY>`
-- The API key label (set by the user at key creation time) is the caller identity shown in push notifications and on the approval page.
+- The API key label (set by the user at key creation or device approval) is the caller identity shown in push notifications and on the approval page.
+- Get a key with `scripts/vault_auth.py login`, which stores it in `~/.config/stupid-vault/credentials.json` (override with `--credentials`).
+
+Device sign-in (OAuth 2.0 Device Authorization Grant, RFC 8628; no auth)
+
+- `POST /v1/device/authorize` (form or JSON): `client_id` (optional), `label` (optional suggested key label)
+  - Returns `device_code`, `user_code`, `verification_uri`, `verification_uri_complete`, `expires_in` (600), `interval` (5)
+- The user opens `verification_uri_complete`, checks the code and approves (the label is editable).
+- `POST /v1/device/token`: `grant_type=urn:ietf:params:oauth:grant-type:device_code`, `device_code`
+  - Pending: HTTP 400 `{"error":"authorization_pending"}`; too fast: `slow_down` (add 5s to the interval)
+  - `access_denied`, `expired_token`, `invalid_grant` (unknown or already used code) are final
+  - Success: `{"access_token":"pb_...","token_type":"Bearer","api_key_label":"..."}`, issued once
 
 Create request
 
@@ -196,7 +207,7 @@ Use short, action-forward phrasing. Do not lead with inability/disclaimer langua
 
 Good:
 
-- "I'll do that via your Permissions Broker. I'll request <upstream_url>, you approve it in the stupid vault app, then I'll fetch the result."
+- "I'll do that via stupid vault. I'll request <upstream_url>, you approve it in the stupid vault app, then I'll fetch the result."
 - "To read that Sheet in MVP, I'll export it via Drive as CSV and parse it."
 
 Avoid:
@@ -242,7 +253,7 @@ Example broker request body:
     "title": "My PR",
     "head": "feature-branch",
     "base": "main",
-    "body": "Opened via Permissions Broker"
+    "body": "Opened via stupid vault"
   },
   "consent_hint": "Open a PR from feature-branch to main"
 }

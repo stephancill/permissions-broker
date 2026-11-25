@@ -34,7 +34,7 @@ export async function listApiKeys(userId: string): Promise<ApiKeyRow[]> {
     .all<ApiKeyRow>(userId);
 }
 
-async function insertApiKey(params: {
+export async function insertApiKey(params: {
   userId: string;
   label: string;
 }): Promise<{ id: string; keyPlain: string }> {
@@ -50,7 +50,7 @@ async function insertApiKey(params: {
   return { id, keyPlain };
 }
 
-function isUniqueLabelError(err: unknown): boolean {
+export function isUniqueLabelError(err: unknown): boolean {
   return (
     err instanceof Error && /UNIQUE constraint failed/i.test(err.message ?? "")
   );

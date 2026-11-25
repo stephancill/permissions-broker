@@ -9,6 +9,14 @@ import {
   rotateApiKey,
 } from "../auth/apiKeyAdmin";
 import {
+  approveDeviceAuthorization,
+  DeviceAuthorizationError,
+  type DeviceAuthorizationRow,
+  denyDeviceAuthorization,
+  getPendingDeviceAuthorization,
+  normalizeUserCode,
+} from "../auth/device";
+import {
   getWebSession,
   requireSessionJson,
   requireSessionPage,
@@ -41,7 +49,13 @@ import {
   listReleasePolicies,
   removeReleasePolicy,
 } from "../release/store";
-import { escapeHtml, POST_JSON_SCRIPT, scriptJson, sendPage } from "./pages";
+import {
+  escapeHtml,
+  POST_JSON_SCRIPT,
+  scriptJson,
+  sendMessagePage,
+  sendPage,
+} from "./pages";
 import { ENROLL_SCRIPT, isSignupAllowed, SIGNIN_SCRIPT } from "./passkey";
 
 // The installable PWA: sign-in, request inbox, API keys, linked accounts and
@@ -499,6 +513,7 @@ function renderKeysPage(
       <label>Label <input type="text" name="label" placeholder="e.g. laptop agent" maxlength="64" required /></label>
       <button type="submit">Create API key</button>
     </form>
+    <p class="note">Signing in a CLI? It shows a code to enter under <a href="/app/device">Sign in a device</a>.</p>
     <h2>Active keys</h2>
     ${
       active.length
@@ -595,6 +610,133 @@ appRouter.post("/keys/:id/:action", requireSessionPage, async (c) => {
     });
   }
   return c.redirect("/app/keys", 303);
+});
+
+// --- Device sign-in (RFC 8628 verification page) ---
+
+function renderDevicePage(
+  c: Context,
+  params: {
+    userCode?: string;
+    pending?: DeviceAuthorizationRow;
+    label?: string;
+    error?: string;
+  }
+): Response {
+  const error = params.error
+    ? `<p class="error">${escapeHtml(params.error)}</p>`
+    : "";
+  const pending = params.pending;
+  if (!pending) {
+    const body = `
+      <h1>Sign in a device</h1>
+      <p>Enter the code shown by the CLI or agent you're signing in.</p>
+      ${error}
+      <form method="get" action="/app/device">
+        <label>Code <input type="text" name="user_code" value="${escapeHtml(params.userCode ?? "")}" placeholder="XXXX-XXXX" autocomplete="off" autocapitalize="characters" required /></label>
+        <button type="submit">Continue</button>
+      </form>`;
+    return sendPage(c, {
+      title: "Sign in a device",
+      body,
+      nav: "/app/keys",
+      status: params.error ? 400 : 200,
+    });
+  }
+
+  const code = escapeHtml(pending.user_code);
+  const label = params.label ?? pending.label_hint ?? pending.client_id;
+  const body = `
+    <h1>Sign in a device</h1>
+    <p>Approving creates a new API key and hands it to the device showing this code:</p>
+    <pre>${code}</pre>
+    <p class="note">Requested by <code>${escapeHtml(pending.client_id)}</code> ${relativeTimeTag(pending.created_at)}. Only approve if you started this sign-in yourself and the code matches what it shows.</p>
+    ${error}
+    <form method="post" action="/app/device/approve">
+      <input type="hidden" name="user_code" value="${code}" />
+      <label>API key label <input type="text" name="label" value="${escapeHtml(label)}" maxlength="64" required /></label>
+      <p class="note">The label is what you'll see on its approval requests.</p>
+      <button type="submit">Approve</button>
+    </form>
+    <form method="post" action="/app/device/deny">
+      <input type="hidden" name="user_code" value="${code}" />
+      <button type="submit">Deny</button>
+    </form>`;
+  return sendPage(c, {
+    title: "Sign in a device",
+    body,
+    script: RELATIVE_TIME_SCRIPT,
+    nav: "/app/keys",
+    status: params.error ? 400 : 200,
+  });
+}
+
+appRouter.get("/device", requireSessionPage, async (c) => {
+  const raw = c.req.query("user_code");
+  if (!raw) return renderDevicePage(c, {});
+  const userCode = normalizeUserCode(raw);
+  const pending = userCode
+    ? await getPendingDeviceAuthorization(userCode)
+    : null;
+  if (!pending) {
+    return renderDevicePage(c, {
+      userCode: raw,
+      error: "That code is invalid, expired, or already used.",
+    });
+  }
+  return renderDevicePage(c, { pending });
+});
+
+appRouter.post("/device/:action", requireSessionPage, async (c) => {
+  const { userId, sessionId } = c.get("webSession");
+  const action = c.req.param("action");
+  if (action !== "approve" && action !== "deny") return c.notFound();
+
+  const form = await c.req.parseBody();
+  const userCode = normalizeUserCode(
+    typeof form.user_code === "string" ? form.user_code : ""
+  );
+  if (!userCode) {
+    return renderDevicePage(c, { error: "Enter the code from your device." });
+  }
+  try {
+    if (action === "deny") {
+      await denyDeviceAuthorization({ userCode, userId, sessionId });
+      return sendMessagePage(c, {
+        title: "Sign-in denied",
+        message: "The device was not given a key.",
+        nav: "/app/keys",
+      });
+    }
+    const parsedLabel = ApiKeyLabelSchema.safeParse(
+      typeof form.label === "string" ? form.label : ""
+    );
+    if (!parsedLabel.success) {
+      throw new DeviceAuthorizationError(
+        "Enter a label (up to 64 characters)."
+      );
+    }
+    await approveDeviceAuthorization({
+      userCode,
+      userId,
+      sessionId,
+      label: parsedLabel.data,
+    });
+    return sendMessagePage(c, {
+      title: "Device signed in",
+      message: `Approved. The device receives its "${parsedLabel.data}" API key on its next check; you can manage it under API keys.`,
+      nav: "/app/keys",
+    });
+  } catch (err) {
+    if (!(err instanceof DeviceAuthorizationError)) throw err;
+    const pending = await getPendingDeviceAuthorization(userCode);
+    return renderDevicePage(c, {
+      userCode,
+      pending: pending ?? undefined,
+      label: typeof form.label === "string" ? form.label : undefined,
+      error: err.message,
+    });
+  }
 });
 
 // --- Releases (CI release policies) ---
