@@ -741,9 +741,12 @@ test("provider approval window auto-approves any endpoint for the provider", asy
     200
   );
 
-  // Still scoped to the requester IP.
+  // Not tied to the requester IP: agents egress from rotating IPs.
   const other = await createProxyRequest("pb_flow_a", "198.51.100.1");
-  expect(other.status).toBe("PENDING_APPROVAL");
+  expect(other.status).toBe("APPROVED");
+  expect((await execute("pb_flow_a", other.request_id as string)).status).toBe(
+    200
+  );
 });
 
 test("connecting an account requires an enrolled passkey", async () => {

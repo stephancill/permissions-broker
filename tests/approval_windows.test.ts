@@ -65,18 +65,20 @@ async function requestGithubUser(ip: string) {
 }
 
 async function requestUpstream(params: {
-  ip: string;
+  ip: string | null;
   upstreamUrl: string;
   method?: string;
+  key?: string;
 }) {
+  const headers: Record<string, string> = {
+    authorization: `Bearer ${params.key ?? "pb_test_key_a"}`,
+    "content-type": "application/json",
+  };
+  // Simulate a proxied deployment that passes through the client IP.
+  if (params.ip) headers["x-forwarded-for"] = params.ip;
   return app().request("/v1/proxy/request", {
     method: "POST",
-    // Simulate a proxied deployment that passes through the client IP.
-    headers: {
-      authorization: "Bearer pb_test_key_a",
-      "content-type": "application/json",
-      "x-forwarded-for": params.ip,
-    },
+    headers,
     body: JSON.stringify({
       upstream_url: params.upstreamUrl,
       method: params.method ?? "GET",
@@ -198,8 +200,84 @@ test("approval window: provider scope auto-approves any endpoint for that provid
     .query("SELECT grant_id FROM proxy_requests WHERE id = ? LIMIT 1;")
     .get(j.request_id as string)) as { grant_id: string };
   expect(row.grant_id).toBe("grant_provider");
+});
 
-  // Still scoped to the requester IP.
+test("approval window: provider scope is not tied to the requester IP", async () => {
+  await setupDb();
+
+  const userId = await insertUser();
+  const keyA = await insertApiKey({
+    userId,
+    label: "keyA",
+    keyPlain: "pb_test_key_a",
+  });
+  await insertApiKey({ userId, label: "keyB", keyPlain: "pb_test_key_b" });
+
+  await createApprovalWindow({
+    userId,
+    apiKeyId: keyA.apiKeyId,
+    requesterIp: "203.0.113.10",
+    method: "GET",
+    url: new URL("https://api.cloudflare.com/client/v4/zones"),
+    scope: "provider",
+    providerId: "cloudflare",
+    grantId: "grant_provider",
+    expiresAt: new Date(Date.now() + 15 * 60_000).toISOString(),
+  });
+
+  const database = await db();
+  const stored = (await database
+    .query("SELECT requester_ip FROM approval_windows LIMIT 1;")
+    .get()) as { requester_ip: string };
+  expect(stored.requester_ip).toBe("*");
+
+  // Agents egress from rotating IPs; a different IP is still covered.
+  const otherIp = await requestUpstream({
+    ip: "198.51.100.1",
+    upstreamUrl: "https://api.cloudflare.com/client/v4/accounts",
+  });
+  expect(((await otherIp.json()) as JsonRecord).status).toBe("APPROVED");
+
+  // As is a deployment that passes no client IP.
+  const noIp = await requestUpstream({
+    ip: null,
+    upstreamUrl: "https://api.cloudflare.com/client/v4/zones",
+  });
+  expect(((await noIp.json()) as JsonRecord).status).toBe("APPROVED");
+
+  // Still scoped to the API key.
+  const otherKey = await requestUpstream({
+    ip: "203.0.113.10",
+    upstreamUrl: "https://api.cloudflare.com/client/v4/zones",
+    key: "pb_test_key_b",
+  });
+  expect(((await otherKey.json()) as JsonRecord).status).toBe(
+    "PENDING_APPROVAL"
+  );
+});
+
+test("approval window: endpoint scope stays tied to the requester IP", async () => {
+  await setupDb();
+
+  const userId = await insertUser();
+  const keyA = await insertApiKey({
+    userId,
+    label: "keyA",
+    keyPlain: "pb_test_key_a",
+  });
+
+  await createApprovalWindow({
+    userId,
+    apiKeyId: keyA.apiKeyId,
+    requesterIp: "203.0.113.10",
+    method: "GET",
+    url: new URL("https://api.github.com/user"),
+    scope: "endpoint",
+    providerId: "github",
+    grantId: "grant_test",
+    expiresAt: new Date(Date.now() + 15 * 60_000).toISOString(),
+  });
+
   const other = await requestGithubUser("198.51.100.1");
   expect(((await other.json()) as JsonRecord).status).toBe("PENDING_APPROVAL");
 });
@@ -228,6 +306,22 @@ test("approval window: provider scope does not cover other providers", async () 
 
   const res = await requestGithubUser("203.0.113.10");
   expect(((await res.json()) as JsonRecord).status).toBe("PENDING_APPROVAL");
+});
+
+test("approval window: endpoint scope requires a requester ip", async () => {
+  await expect(
+    createApprovalWindow({
+      userId: "u",
+      apiKeyId: "k",
+      requesterIp: null,
+      method: "GET",
+      url: new URL("https://api.github.com/user"),
+      scope: "endpoint",
+      providerId: "github",
+      grantId: null,
+      expiresAt: new Date(Date.now() + 15 * 60_000).toISOString(),
+    })
+  ).rejects.toThrow();
 });
 
 test("approval window: provider scope requires a provider id", async () => {

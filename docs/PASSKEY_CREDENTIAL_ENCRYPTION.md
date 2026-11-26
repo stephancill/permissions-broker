@@ -195,8 +195,10 @@ keeps it valid. `proxy_always_allow_rules` is dropped.
 
 Provider-wide windows (`0012_provider_approval_windows.sql`): the approval page has
 a collapsed **Advanced** section, with a warning, that opens a window with
-`scope = 'provider'` and `provider_id` set (endpoint columns hold `*`). It covers
-every request routed to that provider from the same user + API key + requester IP.
+`scope = 'provider'` and `provider_id` set (endpoint and requester IP columns hold
+`*`). It covers every request routed to that provider from the same user + API key,
+from any IP: agents in cloud sandboxes, CI and VPNs egress from rotating IPs, and the
+requester IP comes from `X-Forwarded-For`, which the client can influence.
 The scope is part of the signed approval options, so the passkey assertion commits
 to it. Only offered when the request maps to a provider.
 

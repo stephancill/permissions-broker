@@ -9,8 +9,11 @@ import { db } from "../db/client";
 
 export const APPROVAL_WINDOW_MINUTES = [15, 60] as const;
 
-// "endpoint": method + host + path. "provider": every request routed to the
-// provider (advanced; still scoped to API key + requester IP).
+// "endpoint": method + host + path, scoped to API key + requester IP.
+// "provider": every request routed to the provider from the API key
+// (advanced). Not IP-scoped: agents in cloud sandboxes, CI and VPNs egress
+// from rotating IPs, and the requester IP comes from a client-influenced
+// X-Forwarded-For, so it only caused re-prompts without adding protection.
 export const APPROVAL_WINDOW_SCOPES = ["endpoint", "provider"] as const;
 export type ApprovalWindowScope = (typeof APPROVAL_WINDOW_SCOPES)[number];
 
@@ -46,7 +49,9 @@ export function getApprovalWindowScope(params: {
 export async function findActiveApprovalWindow(params: {
   userId: string;
   apiKeyId: string;
-  requesterIp: string;
+  // Null when the deployment does not pass a client IP; only provider-scoped
+  // windows can match then.
+  requesterIp: string | null;
   method: string;
   url: URL;
   providerId: string;
@@ -56,17 +61,20 @@ export async function findActiveApprovalWindow(params: {
   expiresAt: string;
   scope: ApprovalWindowScope;
 } | null> {
-  const k = getApprovalWindowScope(params);
+  const k = getApprovalWindowScope({
+    ...params,
+    requesterIp: params.requesterIp ?? "",
+  });
   const database = await db();
   const row = (await database
     .query(
-      "SELECT id, grant_id, expires_at, scope FROM approval_windows WHERE user_id = ? AND api_key_id = ? AND requester_ip = ? AND expires_at > ? AND ((scope = 'endpoint' AND method = ? AND upstream_host = ? AND upstream_path = ?) OR (scope = 'provider' AND provider_id = ?)) ORDER BY expires_at DESC LIMIT 1;"
+      "SELECT id, grant_id, expires_at, scope FROM approval_windows WHERE user_id = ? AND api_key_id = ? AND expires_at > ? AND ((scope = 'endpoint' AND requester_ip = ? AND method = ? AND upstream_host = ? AND upstream_path = ?) OR (scope = 'provider' AND provider_id = ?)) ORDER BY expires_at DESC LIMIT 1;"
     )
     .get(
       params.userId,
       k.apiKeyId,
-      k.requesterIp,
       nowIso(),
+      params.requesterIp,
       k.method,
       k.upstreamHost,
       k.upstreamPath,
@@ -92,7 +100,8 @@ export async function createApprovalWindow(params: {
   windowId?: string;
   userId: string;
   apiKeyId: string;
-  requesterIp: string;
+  // Required for endpoint windows; ignored for provider windows.
+  requesterIp: string | null;
   method: string;
   url: URL;
   scope: ApprovalWindowScope;
@@ -103,10 +112,22 @@ export async function createApprovalWindow(params: {
   if (params.scope === "provider" && !params.providerId) {
     throw new Error("provider-scoped approval window requires a provider id");
   }
-  const endpoint = getApprovalWindowScope(params);
+  if (params.scope === "endpoint" && !params.requesterIp) {
+    throw new Error("endpoint-scoped approval window requires a requester ip");
+  }
+  const endpoint = getApprovalWindowScope({
+    ...params,
+    requesterIp: params.requesterIp ?? ANY,
+  });
   const k =
     params.scope === "provider"
-      ? { ...endpoint, method: ANY, upstreamHost: ANY, upstreamPath: ANY }
+      ? {
+          ...endpoint,
+          requesterIp: ANY,
+          method: ANY,
+          upstreamHost: ANY,
+          upstreamPath: ANY,
+        }
       : endpoint;
   const windowId = params.windowId ?? ulid();
   const database = await db();
