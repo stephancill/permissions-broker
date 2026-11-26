@@ -88,12 +88,16 @@ export function sendPage(
     crypto?: boolean;
     nav?: NavItem | null;
     status?: number;
+    // Origins a form submission may redirect to (CSP form-action also
+    // applies to redirects), e.g. an OAuth client's redirect URI.
+    formActionOrigins?: string[];
   }
 ): Response {
   const nonce = randomBase64Url(16);
+  const formAction = ["'self'", ...(params.formActionOrigins ?? [])].join(" ");
   c.header(
     "Content-Security-Policy",
-    `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; connect-src 'self'; img-src 'self'; manifest-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'`
+    `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; connect-src 'self'; img-src 'self'; manifest-src 'self'; worker-src 'self'; base-uri 'none'; form-action ${formAction}; frame-ancestors 'none'`
   );
   // same-origin (not no-referrer) so form POSTs carry our Origin, which the
   // session middleware checks; nothing leaks to other origins.

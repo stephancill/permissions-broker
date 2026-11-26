@@ -11,6 +11,7 @@ import { approveRouter } from "./web/approve";
 import { deviceRouter } from "./web/device";
 import { emailRouter } from "./web/email";
 import { gitRouter } from "./web/git";
+import { mcpRouter, mcpWellKnownRouter, oauthServerRouter } from "./web/mcp";
 import { passkeyRouter } from "./web/passkey";
 import { proxyRouter } from "./web/proxy";
 import { releaseRouter } from "./web/release";
@@ -58,7 +59,11 @@ export function createApp(options: CreateAppOptions = {}) {
       c.header("Cache-Control", "no-cache");
       return c.json(relatedOriginsDocument());
     }
-    if (url.pathname.startsWith("/v1/") || url.pathname === "/healthz") {
+    if (
+      url.pathname.startsWith("/v1/") ||
+      url.pathname === "/healthz" ||
+      url.pathname === "/mcp"
+    ) {
       return next();
     }
     return c.redirect(`${expectedOrigin()}${url.pathname}${url.search}`, 308);
@@ -87,6 +92,12 @@ export function createApp(options: CreateAppOptions = {}) {
     const search = new URL(c.req.url).search;
     return c.redirect(`/app/device${search}`, 302);
   });
+
+  // MCP connector (Claude, ChatGPT): endpoint, OAuth discovery and the
+  // authorization server that issues its API key. See docs/MCP_CONNECTOR.md.
+  app.route("/.well-known", mcpWellKnownRouter);
+  app.route("/oauth", oauthServerRouter);
+  app.route("/mcp", mcpRouter);
 
   app.route("/v1/accounts", accountRouter);
   app.route("/v1/device", deviceRouter);

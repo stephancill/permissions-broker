@@ -80,6 +80,8 @@ Formatting/linting uses Biome.
 - `src/auth/session.ts`: passkey-created browser sessions (cookie), same-origin write checks
 - `src/auth/apiKeyAdmin.ts`: API key create/rename/rotate/revoke
 - `src/auth/device.ts`, `src/web/device.ts`: RFC 8628 device sign-in that issues API keys (approval page in `src/web/app.ts`, see `docs/DEVICE_AUTHORIZATION.md`)
+- `src/web/mcp.ts`: MCP connector for Claude/ChatGPT (`/mcp` JSON-RPC endpoint, OAuth discovery, `/oauth/*` authorization server routes and consent page)
+- `src/mcp/`: MCP tools (`tools.ts`, call `/v1` handlers in-process) and the OAuth authorization server logic (`oauthServer.ts`, see `docs/MCP_CONNECTOR.md`)
 - `src/connect/links.ts`: OAuth/connect-form link creation, provider list
 - `src/push/`: Web Push (VAPID + RFC 8291 encryption on WebCrypto) and per-user fan-out
 - `public/`: PWA icons (Workers assets binding; `serveStatic` under Bun)
@@ -111,6 +113,15 @@ Formatting/linting uses Biome.
 - Agents get keys via `skills/stupid-vault/scripts/vault_auth.py login` (device flow).
 - The skill scripts read only the credentials file (`~/.config/stupid-vault/credentials.json`,
   override `--credentials`); don't reintroduce env-var configuration in the skill.
+
+### MCP connector (`/mcp`)
+
+- Claude/ChatGPT sign in through the broker's own OAuth 2.1 server (DCR, PKCE S256,
+  RFC 9207 `iss`); the access token is an ordinary API key labelled on the consent page.
+- MCP tools must go through the existing `/v1` handlers with the caller's key
+  (`callRoute` in `src/mcp/tools.ts`), not around them, so approvals stay identical.
+- Keep the endpoint stateless (JSON responses, no SSE/sessions) and tool failures as
+  `isError` results. See `docs/MCP_CONNECTOR.md`.
 
 ### Proxy request lifecycle (`/v1/proxy`)
 

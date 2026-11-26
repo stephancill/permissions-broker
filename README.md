@@ -24,6 +24,10 @@ Agents sign in with `python3 skills/stupid-vault/scripts/vault_auth.py login` (O
 
 When self-hosting, sign in with `vault_auth.py login --base-url <your broker>`; the scripts use the broker URL stored with the credential.
 
+## Claude / ChatGPT connector
+
+The broker is also a remote MCP server: add `<APP_BASE_URL>/mcp` as a custom connector in Claude or ChatGPT (developer mode). The client signs in with OAuth (the user approves it in the app and it receives an API key), then gets tools to list linked accounts and make approval-gated requests. See `docs/MCP_CONNECTOR.md`.
+
 ## Self-hosting
 
 ### Bun/Railway-style hosting
@@ -133,6 +137,7 @@ Endpoints:
 - `GET /v1/accounts/` (list linked/connected provider accounts for the authenticated user)
 - `GET /v1/whoami` (debug: verify API key auth)
 - `POST /v1/device/authorize`, `POST /v1/device/token` (no auth; RFC 8628 device flow that issues an API key, see `docs/DEVICE_AUTHORIZATION.md`)
+- `POST /mcp` (MCP Streamable HTTP endpoint for Claude/ChatGPT connectors) with OAuth discovery at `/.well-known/oauth-protected-resource` and `/.well-known/oauth-authorization-server` and the authorization server at `/oauth/register`, `/oauth/authorize`, `/oauth/token` (see `docs/MCP_CONNECTOR.md`)
 
 Email access details: `docs/EMAIL_IMAP.md`
 
