@@ -15,10 +15,9 @@ Registered in the Cloudflare dashboard under Manage Account > OAuth clients
   sent as well.
 - Redirect URI `https://vault.stupidtech.net/v1/accounts/callback/cloudflare`.
 - Scopes: `CLOUDFLARE_OAUTH_SCOPES` in `src/providers/cloudflare/oauth.ts`
-  (Workers scripts/routes/builds/KV/D1/R2/Queues/Vectorize/Secrets Store/
-  Workers AI/Containers/tail/observability, Pages (`page.*`), zones, DNS, plus
-  account/user/membership read): enough to create a new project and deploy
-  it. Only `account-settings.read` and
+  (Workers admin/scripts/routes/KV/D1/R2/tail/observability, Pages
+  (`page.*`), zones, DNS, plus account/user/membership read): enough to create
+  a Worker and deploy it. Only `account-settings.read` and
   `user-details.read` are required; the rest are optional so the user can trim
   them on the consent screen. `offline_access` yields refresh tokens.
   Keep this list in sync with the client: Cloudflare rejects scopes the client
