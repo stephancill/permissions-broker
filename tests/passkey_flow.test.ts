@@ -1162,6 +1162,8 @@ test("cloudflare connects over OAuth and refreshes with rotation", async () => {
     const scope = authorize.searchParams.get("scope") ?? "";
     expect(scope).toContain("offline_access");
     expect(scope).toContain("workers-scripts.edit");
+    // Creating a Worker needs Workers Admin; Editor only changes existing ones.
+    expect(scope).toContain("workers-scripts.admin");
 
     // Cloudflare redirects back (with its RFC 9207 issuer).
     const state = authorize.searchParams.get("state") ?? "";
