@@ -15,12 +15,25 @@ Registered in the Cloudflare dashboard under Manage Account > OAuth clients
   sent as well.
 - Redirect URI `https://vault.stupidtech.net/v1/accounts/callback/cloudflare`.
 - Scopes: `CLOUDFLARE_OAUTH_SCOPES` in `src/providers/cloudflare/oauth.ts`
-  (Workers scripts/routes/KV/D1/R2/tail/observability, Pages (`page.*`), zones,
-  DNS, plus account/user/membership read). Only `account-settings.read` and
+  (Workers scripts/routes/builds/KV/D1/R2/Queues/Vectorize/Secrets Store/
+  Workers AI/Containers/tail/observability, Pages (`page.*`), zones, DNS, plus
+  account/user/membership read): enough to create a new project and deploy
+  it. Only `account-settings.read` and
   `user-details.read` are required; the rest are optional so the user can trim
   them on the consent screen. `offline_access` yields refresh tokens.
   Keep this list in sync with the client: Cloudflare rejects scopes the client
-  wasn't registered with.
+  wasn't registered with. Scope IDs come from Cloudflare's catalog,
+  `GET https://api.cloudflare.com/client/v4/oauth/scopes`.
+- Creating a Worker needs `workers-scripts.admin` (Workers Admin).
+  `workers-scripts.edit` is Workers Editor, which can update, deploy, and set
+  secrets and schedules on an existing Worker, but not create or delete one:
+  Cloudflare answers an upload of a new script with 403 "No access to the
+  specified resource". See Cloudflare's
+  [Workers roles](https://developers.cloudflare.com/workers/authorization/workers/).
+- After adding scopes to the list, add them to the client in the dashboard
+  first (or the consent screen fails with `invalid_scope`), then each user
+  reconnects Cloudflare under Accounts to grant them. Existing links keep
+  their old scopes until then.
 - Worker secrets `CLOUDFLARE_OAUTH_CLIENT_ID` / `CLOUDFLARE_OAUTH_CLIENT_SECRET`.
   The secret is shown once at creation; rotate it from the client page.
 
