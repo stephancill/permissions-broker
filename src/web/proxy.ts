@@ -693,17 +693,14 @@ proxyRouter.post("/request", requireApiKey, async (c) => {
 
   const requesterIp = getRequesterIp(c);
 
-  const approvalWindow =
-    requesterIp != null
-      ? await findActiveApprovalWindow({
-          userId: auth.userId,
-          apiKeyId: auth.apiKeyId,
-          requesterIp,
-          method: methodNorm,
-          url: validatedUrl,
-          providerId: provider.id,
-        })
-      : null;
+  const approvalWindow = await findActiveApprovalWindow({
+    userId: auth.userId,
+    apiKeyId: auth.apiKeyId,
+    requesterIp,
+    method: methodNorm,
+    url: validatedUrl,
+    providerId: provider.id,
+  });
 
   const normalizedHeaders = normalizeHeaders(
     provider.extraAllowedRequestHeaders,

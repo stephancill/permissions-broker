@@ -77,7 +77,7 @@ Approvals
 
 - The user gets a push notification on their installed stupid vault app; the approval page requires their passkey to approve, and has a Deny button.
 - A user may approve an endpoint for 15/60 minutes. Requests from the same API key and IP to the same method + host + path are then created as `APPROVED` immediately.
-- A user may also (advanced) approve all requests to a provider for 15/60 minutes. Requests from the same API key and IP to any URL routed to that provider are then created as `APPROVED` immediately.
+- A user may also (advanced) approve all requests to a provider for 15/60 minutes. Requests from the same API key (from any IP) to any URL routed to that provider are then created as `APPROVED` immediately.
 
 Debug
 

@@ -110,7 +110,7 @@ type ApprovalTarget = {
   consentHint: string | null;
   // Provider whose stored credential this approval unlocks (if linked).
   credentialProvider: string | null;
-  // Proxy only: approval windows need the requester IP to scope them.
+  // Proxy only: endpoint approval windows need the requester IP to scope them.
   requesterIp: string | null;
   apiKeyId: string;
   operation?: string;
@@ -337,7 +337,7 @@ function parseOptions(
     const p = ProxyOptions.safeParse(raw);
     if (!p.success) return null;
     if (p.data.mode === "window") {
-      if (!target.requesterIp) return null;
+      if (p.data.scope === "endpoint" && !target.requesterIp) return null;
       if (p.data.scope === "provider" && !target.credentialProvider) {
         return null;
       }
@@ -460,16 +460,15 @@ function renderOptionsHtml(target: ApprovalTarget): string {
     const provider = target.credentialProvider
       ? escapeHtml(target.credentialProvider)
       : null;
-    const advanced =
-      target.requesterIp && provider
-        ? `<details id="advanced"><summary>Advanced</summary>
-          <p class="error"><b>Warning:</b> this auto-approves <b>every</b> ${provider} request from this API key and IP, including writes and deletes on anything your linked ${provider} account can access. You will not be asked again until it expires. Only use this for an agent you fully trust.</p>
+    const advanced = provider
+      ? `<details id="advanced"><summary>Advanced</summary>
+          <p class="error"><b>Warning:</b> this auto-approves <b>every</b> ${provider} request from this API key, from any IP, including writes and deletes on anything your linked ${provider} account can access. You will not be asked again until it expires. Only use this for an agent you fully trust.</p>
           ${APPROVAL_WINDOW_MINUTES.map(
             (m) =>
               `<label><input type="radio" name="opt" value="window:provider:${m}" /> Approve all ${provider} requests for ${m} minutes</label>`
           ).join("")}
         </details>`
-        : "";
+      : "";
     return `<label><input type="radio" name="opt" value="once" checked /> Approve once</label>${windows}${advanced}`;
   }
   if (target.kind === "git" && target.operation === "push") {
@@ -915,13 +914,7 @@ approveRouter.post("/:kind/:id", requireSessionJson, async (c) => {
     return c.json({ error: "not_pending" }, 409);
   }
 
-  if (
-    windowId &&
-    windowExpiresAt &&
-    target.requesterIp &&
-    target.upstreamUrl &&
-    target.method
-  ) {
+  if (windowId && windowExpiresAt && target.upstreamUrl && target.method) {
     await createApprovalWindow({
       windowId,
       userId: target.userId,
@@ -957,7 +950,7 @@ approveRouter.post("/:kind/:id", requireSessionJson, async (c) => {
   const message = windowExpiresAt
     ? proxyWindow?.scope === "provider"
       ? `Approved. All ${target.credentialProvider} requests from this API key are auto-approved until ${windowExpiresAt}.`
-      : `Approved. Matching requests are auto-approved until ${windowExpiresAt}.`
+      : `Approved. Requests to this endpoint from this API key and IP are auto-approved until ${windowExpiresAt}.`
     : "Approved.";
   return c.json({ ok: true, message });
 });

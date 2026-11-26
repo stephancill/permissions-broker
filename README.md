@@ -112,7 +112,7 @@ Everything the user does happens in the stupid vault PWA at `/app` (installable;
 - **Accounts**: connect/disconnect Google, GitHub, Spotify and Cloudflare (OAuth) and IMAP email (read-only form).
 - **Settings**: enable notifications on this device, list/remove devices, send a test push, replace the passkey, sign out.
 
-Approvals: proxy requests can be approved once or for 15/60 minutes per endpoint (an approval window, scoped to API key + requester IP + method + host + path). An **Advanced** section (collapsed by default, with a warning) can instead open a 15/60 minute window for every request to the provider from that API key + requester IP.
+Approvals: proxy requests can be approved once or for 15/60 minutes per endpoint (an approval window, scoped to API key + requester IP + method + host + path). An **Advanced** section (collapsed by default, with a warning) can instead open a 15/60 minute window for every request to the provider from that API key (from any IP, so agents on rotating egress IPs are covered).
 
 ## Public API
 
