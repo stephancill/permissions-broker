@@ -13,13 +13,18 @@ The scripts read their credential (broker URL + API key) from
 `~/.config/stupid-vault/credentials.json` (`$XDG_CONFIG_HOME/stupid-vault/`
 if set). Pass `--credentials <path>` to any script to use a different file.
 
+The scripts need network access to the broker. If requests to it are blocked
+(e.g. a sandbox with a host allowlist), tell the user the broker's host must be
+allowed in that environment's network settings.
+
 1. Check whether you're signed in:
 
    ```bash
    python3 <skill-dir>/scripts/vault_auth.py status
    ```
 
-2. If not, sign in with the device flow:
+2. If not (or the stored session key expired), request a session key with the
+   device flow:
 
    ```bash
    python3 <skill-dir>/scripts/vault_auth.py login --label "<agent> on <machine>"
@@ -30,6 +35,11 @@ if set). Pass `--credentials <path>` to any script to use a different file.
    and approve. The command waits (up to 10 minutes) and saves the new key with mode
    0600. Run it in the background if your shell tool times out sooner.
    Exit codes: `0` signed in, `10` code expired, `11` denied, `12` error.
+
+   The key is a **session key**: it expires 6 hours after approval. When a script
+   reports that it expired (or the broker answers `api_key_expired`), run `login`
+   again; no `--force` needed. Only pass `--persistent` if the user asks for a
+   long-lived key.
 
 3. Never print, copy or commit the credentials file or the key inside it.
 

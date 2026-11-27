@@ -78,7 +78,8 @@ Formatting/linting uses Biome.
   - `src/web/passkey.ts`, `src/web/approve.ts`: passkey enrollment and approval pages
 - `src/web/app.ts`: PWA pages (inbox, API keys, accounts, settings), push subscribe, manifest + service worker
 - `src/auth/session.ts`: passkey-created browser sessions (cookie), same-origin write checks
-- `src/auth/apiKeyAdmin.ts`: API key create/rename/rotate/revoke
+- `src/auth/apiKeyAdmin.ts`: API key create/rename/rotate/delete, session key expiry
+- `src/auth/requestOrigin.ts`: IP / user agent / edge geolocation recorded on keys
 - `src/auth/device.ts`, `src/web/device.ts`: RFC 8628 device sign-in that issues API keys (approval page in `src/web/app.ts`, see `docs/DEVICE_AUTHORIZATION.md`)
 - `src/connect/links.ts`: OAuth/connect-form link creation, provider list
 - `src/push/`: Web Push (VAPID + RFC 8291 encryption on WebCrypto) and per-user fan-out
@@ -105,10 +106,18 @@ Formatting/linting uses Biome.
 - Clients authenticate to the broker via `Authorization: Bearer <pb_...>`.
 - The API key label is the identity shown to the user in push notifications and approval pages.
 - Do not accept "caller_label" or similar identity claims in request bodies.
+- Keys are deleted, not revoked (labels become reusable). Deleting cascades to the
+  key's requests and sessions; audit_events keep the record.
+- `session` keys expire 6 hours after issue (`expires_at`); `requireApiKey` rejects
+  them with `api_key_expired` and the sweeper deletes them.
+- Keys record created/last-used IP, user agent and location (`requestOrigin`).
+  Location only comes from the edge (Cloudflare `request.cf`); never call a
+  third-party IP lookup.
 
 ### Device sign-in and the skill credential
 
-- Agents get keys via `skills/stupid-vault/scripts/vault_auth.py login` (device flow).
+- Agents get session keys via `skills/stupid-vault/scripts/vault_auth.py login` (device flow,
+  `key_type=session`; `--persistent` for a long-lived key).
 - The skill scripts read only the credentials file (`~/.config/stupid-vault/credentials.json`,
   override `--credentials`); don't reintroduce env-var configuration in the skill.
 
