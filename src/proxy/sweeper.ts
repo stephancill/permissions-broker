@@ -4,7 +4,6 @@ import { sweepCredentialGrants } from "../credentials/store";
 import { db } from "../db/client";
 import { sweepEmailSessions } from "../email/sweeper";
 import { sweepGitSessions } from "../git/sweeper";
-import { sweepOAuthServerState } from "../mcp/oauthServer";
 import { sweepReleaseState } from "../release/store";
 
 function nowIso(): string {
@@ -29,7 +28,6 @@ export async function sweepExpiredState(): Promise<void> {
   await sweepReleaseState();
   await sweepWebSessions();
   await sweepDeviceAuthorizations();
-  await sweepOAuthServerState();
   // After session sweeps so keys of just-expired targets are wiped too.
   await sweepCredentialGrants();
 }

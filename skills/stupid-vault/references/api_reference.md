@@ -10,7 +10,6 @@ Auth
 
 - Header: `Authorization: Bearer <USER_API_KEY>`
 - The API key label (set by the user at key creation or device approval) is the caller identity shown in push notifications and on the approval page.
-- Chat clients (Claude, ChatGPT) can use the broker as an MCP connector at `<broker>/mcp` instead of this skill; it exposes the same proxy flow as tools (`docs/MCP_CONNECTOR.md`).
 - Get a key with `scripts/vault_auth.py login`, which stores it in `~/.config/stupid-vault/credentials.json` (override with `--credentials`).
 
 Device sign-in (OAuth 2.0 Device Authorization Grant, RFC 8628; no auth)
