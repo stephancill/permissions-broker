@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import { ApiKeyLabelSchema } from "../auth/apiKeyAdmin";
 import { createDeviceAuthorization, pollDeviceToken } from "../auth/device";
+import { requestOrigin } from "../auth/requestOrigin";
 import { expectedOrigin } from "../passkey/webauthn";
 
 // RFC 8628 device authorization endpoints. Unauthenticated by design: the CLI
@@ -19,6 +20,9 @@ const AuthorizeSchema = z.object({
     .default("stupid-vault-cli"),
   // Suggested API key label (e.g. the machine name); the user can edit it.
   label: ApiKeyLabelSchema.optional(),
+  // "session" keys expire after SESSION_KEY_TTL_SECONDS (agents); the default
+  // "persistent" key lives until deleted.
+  key_type: z.enum(["persistent", "session"]).default("persistent"),
 });
 
 const TokenSchema = z.object({
@@ -62,6 +66,7 @@ deviceRouter.post("/authorize", async (c) => {
   const created = await createDeviceAuthorization({
     clientId: parsed.data.client_id,
     labelHint: parsed.data.label ?? null,
+    keyType: parsed.data.key_type,
   });
   const verificationUri = `${expectedOrigin()}/device`;
   return c.json({
@@ -84,7 +89,10 @@ deviceRouter.post("/token", async (c) => {
   if (!parsed.success) {
     return c.json({ error: "invalid_request" }, 400);
   }
-  const result = await pollDeviceToken({ deviceCode: parsed.data.device_code });
+  const result = await pollDeviceToken({
+    deviceCode: parsed.data.device_code,
+    origin: requestOrigin(c),
+  });
   if (!result.ok) {
     return c.json(
       {
@@ -100,5 +108,13 @@ deviceRouter.post("/token", async (c) => {
     access_token: result.accessToken,
     token_type: "Bearer",
     api_key_label: result.label,
+    key_type: result.keyType,
+    ...(result.expiresAt && {
+      expires_at: result.expiresAt,
+      expires_in: Math.max(
+        0,
+        Math.floor((Date.parse(result.expiresAt) - Date.now()) / 1000)
+      ),
+    }),
   });
 });

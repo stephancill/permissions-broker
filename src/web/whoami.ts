@@ -10,5 +10,7 @@ whoamiRouter.get("/whoami", requireApiKey, (c) => {
     user_id: auth.userId,
     api_key_id: auth.apiKeyId,
     api_key_label: auth.apiKeyLabel,
+    key_type: auth.keyType,
+    expires_at: auth.expiresAt,
   });
 });

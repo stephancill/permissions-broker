@@ -4,7 +4,8 @@
 The credential (broker URL + API key) lives in one JSON file that vault_proxy.py
 and vault_git.py read. `login` obtains it with the OAuth 2.0 Device
 Authorization Grant (RFC 8628): it prints a code, the user approves it in the
-app, and the broker issues a new API key.
+app, and the broker issues a new API key. By default it's a session key that
+expires after 6 hours; `--persistent` asks for one that lives until deleted.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +44,17 @@ class Credentials:
     base_url: str
     api_key: str
     label: str | None
+    expires_at: str | None = None
+
+
+def is_expired(expires_at: str | None) -> bool:
+    if not expires_at:
+        return False
+    try:
+        when = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return datetime.now(timezone.utc) >= when
 
 
 class CredentialsError(Exception):
@@ -67,18 +80,31 @@ def load_credentials(path: Path | None) -> Credentials:
             f"invalid credentials file {p}: expected base_url and api_key"
         )
     label = data.get("label")
-    return Credentials(
+    expires_at = data.get("expires_at")
+    creds = Credentials(
         base_url=base_url.rstrip("/"),
         api_key=api_key,
         label=label if isinstance(label, str) else None,
+        expires_at=expires_at if isinstance(expires_at, str) else None,
     )
+    if is_expired(creds.expires_at):
+        raise CredentialsError(
+            f"the session key in {p} expired at {creds.expires_at}. "
+            f"Run: python3 {Path(__file__).resolve()} login"
+        )
+    return creds
 
 
 def save_credentials(path: Path, creds: Credentials) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     os.chmod(path.parent, 0o700)
     payload = json.dumps(
-        {"base_url": creds.base_url, "api_key": creds.api_key, "label": creds.label},
+        {
+            "base_url": creds.base_url,
+            "api_key": creds.api_key,
+            "label": creds.label,
+            "expires_at": creds.expires_at,
+        },
         indent=2,
     )
     # Write 0600 from the start, then rename into place atomically.
@@ -128,7 +154,7 @@ def usage() -> str:
     return f"""vault_auth.py - sign in to stupid vault
 
 Usage:
-  vault_auth.py login [--label <text>] [--base-url <url>] [--force]
+  vault_auth.py login [--label <text>] [--base-url <url>] [--persistent] [--force]
   vault_auth.py status
   vault_auth.py logout
   vault_auth.py base-url    Print the broker URL of the stored credential
@@ -139,24 +165,41 @@ Options:
   --credentials <path>      Credentials file (default: {default_credentials_path()})
   --base-url <url>          Broker URL for login (default: {DEFAULT_BASE_URL})
   --label <text>            Suggested API key label (user can edit it on approval)
-  --force                   Replace an existing credential on login
+  --persistent              Ask for a key that lives until deleted in the app
+                            (default: a session key that expires after 6 hours)
+  --force                   Replace an existing, unexpired credential on login
 
 login prints a URL and code; the user approves it in the app, then the new
-API key is saved to the credentials file (mode 0600).
+API key is saved to the credentials file (mode 0600). An expired session key
+is replaced without --force.
 
 Exit codes: 0 ok, 10 code expired, 11 denied, 12 error.
 """
 
 
-def cmd_login(path: Path, base_url: str, label: str | None, force: bool) -> int:
-    if path.exists() and not force:
+def stored_credential_is_live(path: Path) -> bool:
+    try:
+        load_credentials(path)
+    except CredentialsError:
+        return False
+    return True
+
+
+def cmd_login(
+    path: Path, base_url: str, label: str | None, force: bool, persistent: bool
+) -> int:
+    if path.exists() and not force and stored_credential_is_live(path):
         eprint(f"already signed in ({path}); pass --force to replace it")
         return 12
 
     base = base_url.rstrip("/")
     status, auth = post_form(
         f"{base}/v1/device/authorize",
-        {"client_id": CLIENT_ID, "label": label or default_label()},
+        {
+            "client_id": CLIENT_ID,
+            "label": label or default_label(),
+            "key_type": "persistent" if persistent else "session",
+        },
     )
     if status != 200 or "device_code" not in auth:
         eprint(f"device authorization failed: http_status={status} body={auth}")
@@ -180,9 +223,11 @@ def cmd_login(path: Path, base_url: str, label: str | None, force: bool) -> int:
                 base_url=base,
                 api_key=str(tok["access_token"]),
                 label=str(tok.get("api_key_label") or "") or None,
+                expires_at=str(tok.get("expires_at") or "") or None,
             )
             save_credentials(path, creds)
-            eprint(f"signed in as API key {creds.label!r}; saved to {path}")
+            until = f", expires {creds.expires_at}" if creds.expires_at else ""
+            eprint(f"signed in as API key {creds.label!r}{until}; saved to {path}")
             return 0
         error = tok.get("error")
         if error == "authorization_pending":
@@ -222,6 +267,8 @@ def cmd_status(path: Path) -> int:
                 "credentials": str(path),
                 "base_url": creds.base_url,
                 "api_key_label": who.get("api_key_label"),
+                "key_type": who.get("key_type"),
+                "expires_at": who.get("expires_at"),
             }
         )
     )
@@ -244,7 +291,9 @@ def cmd_logout(path: Path) -> int:
         eprint(f"not signed in ({path} does not exist)")
         return 0
     path.unlink()
-    eprint(f"removed {path}. The key stays valid until you revoke it in the app (API keys).")
+    eprint(
+        f"removed {path}. The key stays valid until it expires or you delete it in the app (API keys)."
+    )
     return 0
 
 
@@ -257,6 +306,7 @@ def main() -> int:
     base_url = DEFAULT_BASE_URL
     label: str | None = None
     force = False
+    persistent = False
     rest: list[str] = []
     i = 0
     try:
@@ -281,6 +331,10 @@ def main() -> int:
                 force = True
                 i += 1
                 continue
+            if arg == "--persistent":
+                persistent = True
+                i += 1
+                continue
             rest.append(arg)
             i += 1
         if len(rest) != 1 or rest[0] not in COMMANDS:
@@ -293,7 +347,7 @@ def main() -> int:
     cred_path = path or default_credentials_path()
     try:
         if rest[0] == "login":
-            return cmd_login(cred_path, base_url, label, force)
+            return cmd_login(cred_path, base_url, label, force, persistent)
         if rest[0] == "status":
             return cmd_status(cred_path)
         if rest[0] == "header":

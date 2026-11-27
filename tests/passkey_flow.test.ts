@@ -655,19 +655,54 @@ test("API keys are created in the app and shown once", async () => {
   );
   expect(list).not.toContain(key as string);
 
-  // Revoked keys move into a collapsed section below the active ones.
-  const id = list.match(/action="\/app\/keys\/([^/"]+)\/revoke"/)?.[1];
+  // The keys page shows where the key was issued to.
+  expect(list).toContain("Persistent key");
+
+  // Rotation replaces the secret in place: same key, old secret rejected.
+  const id = list.match(/action="\/app\/keys\/([^/"]+)\/delete"/)?.[1];
   expect(id).toBeDefined();
-  const revoke = await app.request(`/app/keys/${id}/revoke`, {
+  const rotated = await app.request(`/app/keys/${id}/rotate`, {
     method: "POST",
     headers: { origin: ORIGIN, cookie: account.cookie },
   });
-  expect(revoke.status).toBeLessThan(400);
-  const after = await (await getPage("/app/keys", account.cookie)).text();
-  expect(after).toContain("<p>No active API keys.</p>");
-  expect(after).toMatch(
-    /<details>\s*<summary>Revoked \(1\)<\/summary>[\s\S]*laptop agent[\s\S]*<\/details>/
+  const newKey = (await rotated.text()).match(
+    /<pre id="new-key">(pb_[A-Za-z0-9_-]+)<\/pre>/
+  )?.[1];
+  expect(newKey).toBeDefined();
+  const oldWho = await app.request("/v1/whoami", {
+    headers: { authorization: `Bearer ${key}` },
+  });
+  expect(oldWho.status).toBe(401);
+  const newWho = await app.request("/v1/whoami", {
+    headers: { authorization: `Bearer ${newKey}` },
+  });
+  expect(((await newWho.json()) as { api_key_id: string }).api_key_id).toBe(
+    id as string
   );
+
+  // Deleting removes the key entirely and frees its label.
+  const del = await app.request(`/app/keys/${id}/delete`, {
+    method: "POST",
+    headers: { origin: ORIGIN, cookie: account.cookie },
+  });
+  expect(del.status).toBeLessThan(400);
+  const after = await (await getPage("/app/keys", account.cookie)).text();
+  expect(after).toContain("<p>No API keys.</p>");
+  const gone = await app.request("/v1/whoami", {
+    headers: { authorization: `Bearer ${newKey}` },
+  });
+  expect(gone.status).toBe(401);
+
+  const again = await app.request("/app/keys", {
+    method: "POST",
+    headers: {
+      origin: ORIGIN,
+      cookie: account.cookie,
+      "content-type": "application/x-www-form-urlencoded",
+    },
+    body: "label=laptop+agent",
+  });
+  expect(await again.text()).toContain('<pre id="new-key">');
 });
 
 test("approval window auto-approves the endpoint and survives rotation", async () => {

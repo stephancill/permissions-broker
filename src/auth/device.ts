@@ -4,7 +4,12 @@ import { auditEvent } from "../audit/audit";
 import { randomBase64Url } from "../crypto/random";
 import { sha256Hex } from "../crypto/sha256";
 import { db } from "../db/client";
-import { insertApiKey, isUniqueLabelError } from "./apiKeyAdmin";
+import {
+  type ApiKeyType,
+  insertApiKey,
+  isUniqueLabelError,
+} from "./apiKeyAdmin";
+import type { RequestOrigin } from "./requestOrigin";
 
 // OAuth 2.0 Device Authorization Grant (RFC 8628) for issuing API keys to
 // CLIs. See docs/DEVICE_AUTHORIZATION.md.
@@ -25,6 +30,7 @@ export type DeviceAuthorizationRow = {
   user_code: string;
   client_id: string;
   label_hint: string | null;
+  key_type: ApiKeyType;
   status: "PENDING" | "APPROVED" | "DENIED" | "CONSUMED";
   user_id: string | null;
   label: string | null;
@@ -69,6 +75,7 @@ export function normalizeUserCode(raw: string): string | null {
 export async function createDeviceAuthorization(params: {
   clientId: string;
   labelHint: string | null;
+  keyType: ApiKeyType;
 }): Promise<{
   deviceCode: string;
   userCode: string;
@@ -85,7 +92,7 @@ export async function createDeviceAuthorization(params: {
     try {
       await database
         .query(
-          "INSERT INTO device_authorizations (id, device_code_hash, user_code, client_id, label_hint, status, interval_seconds, created_at, expires_at) VALUES (?, ?, ?, ?, ?, 'PENDING', ?, ?, ?);"
+          "INSERT INTO device_authorizations (id, device_code_hash, user_code, client_id, label_hint, key_type, status, interval_seconds, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, 'PENDING', ?, ?, ?);"
         )
         .run(
           ulid(),
@@ -93,6 +100,7 @@ export async function createDeviceAuthorization(params: {
           userCode,
           params.clientId,
           params.labelHint,
+          params.keyType,
           DEVICE_POLL_INTERVAL_SECONDS,
           new Date(now).toISOString(),
           new Date(now + DEVICE_CODE_TTL_SECONDS * 1000).toISOString()
@@ -111,7 +119,7 @@ export async function createDeviceAuthorization(params: {
 }
 
 const SELECT_COLUMNS =
-  "id, user_code, client_id, label_hint, status, user_id, label, approved_session_id, interval_seconds, last_polled_at, created_at, expires_at";
+  "id, user_code, client_id, label_hint, key_type, status, user_id, label, approved_session_id, interval_seconds, last_polled_at, created_at, expires_at";
 
 // A code the signed-in user can still act on.
 export async function getPendingDeviceAuthorization(
@@ -207,11 +215,19 @@ export type DeviceTokenError =
   | "invalid_grant";
 
 export type DeviceTokenResult =
-  | { ok: true; accessToken: string; label: string }
+  | {
+      ok: true;
+      accessToken: string;
+      label: string;
+      keyType: ApiKeyType;
+      expiresAt: string | null;
+    }
   | { ok: false; error: DeviceTokenError; description?: string };
 
 export async function pollDeviceToken(params: {
   deviceCode: string;
+  // The poller is the client that receives the key.
+  origin: RequestOrigin;
 }): Promise<DeviceTokenResult> {
   const database = await db();
   const row = await database
@@ -263,9 +279,16 @@ export async function pollDeviceToken(params: {
     return { ok: false, error: "invalid_grant" };
   }
 
-  let created: { id: string; keyPlain: string };
+  const keyType: ApiKeyType =
+    row.key_type === "session" ? "session" : "persistent";
+  let created: Awaited<ReturnType<typeof insertApiKey>>;
   try {
-    created = await insertApiKey({ userId: row.user_id, label: row.label });
+    created = await insertApiKey({
+      userId: row.user_id,
+      label: row.label,
+      keyType,
+      origin: params.origin,
+    });
   } catch (err) {
     if (!isUniqueLabelError(err)) throw err;
     return {
@@ -285,12 +308,23 @@ export async function pollDeviceToken(params: {
     event: {
       apiKeyId: created.id,
       label: row.label,
+      keyType,
+      expiresAt: created.expiresAt,
       via: "device_authorization",
       deviceAuthorizationId: row.id,
       clientId: row.client_id,
+      ip: params.origin.ip,
+      location: params.origin.location,
+      userAgent: params.origin.userAgent,
     },
   });
-  return { ok: true, accessToken: created.keyPlain, label: row.label };
+  return {
+    ok: true,
+    accessToken: created.keyPlain,
+    label: row.label,
+    keyType,
+    expiresAt: created.expiresAt,
+  };
 }
 
 export async function sweepDeviceAuthorizations(): Promise<void> {

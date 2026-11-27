@@ -3,10 +3,12 @@ import {
   ApiKeyError,
   ApiKeyLabelSchema,
   createApiKey,
+  deleteApiKey,
   listApiKeys,
   renameApiKey,
-  revokeApiKey,
   rotateApiKey,
+  SESSION_KEY_TTL_SECONDS,
+  suggestFreeLabel,
 } from "../auth/apiKeyAdmin";
 import {
   approveDeviceAuthorization,
@@ -16,6 +18,7 @@ import {
   getPendingDeviceAuthorization,
   normalizeUserCode,
 } from "../auth/device";
+import { describeOrigin, requestOrigin } from "../auth/requestOrigin";
 import {
   getWebSession,
   requireSessionJson,
@@ -452,6 +455,30 @@ appRouter.get("/", requireSessionPage, async (c) => {
 
 // --- API keys ---
 
+function fmtExpiresIn(iso: string): string {
+  const m = Math.max(0, Math.floor((Date.parse(iso) - Date.now()) / 60_000));
+  const h = Math.floor(m / 60);
+  const rest = h > 0 ? `${h} h ${m % 60} min` : `${m} min`;
+  return `in ${rest} (${fmtTime(iso)})`;
+}
+
+// " from Cape Town, ZA (203.0.113.7) · curl/8.4" for the audit trail.
+function originNote(params: {
+  ip: string | null;
+  location: string | null;
+  userAgent: string | null;
+}): string {
+  const where = describeOrigin(params);
+  const ua = params.userAgent
+    ? `<span title="${escapeHtml(params.userAgent)}">${escapeHtml(
+        params.userAgent.length > 60
+          ? `${params.userAgent.slice(0, 59)}…`
+          : params.userAgent
+      )}</span>`
+    : "";
+  return `${where ? ` from ${escapeHtml(where)}` : ""}${ua ? ` · ${ua}` : ""}`;
+}
+
 function renderKeysPage(
   c: Context,
   params: {
@@ -474,35 +501,42 @@ function renderKeysPage(
 
   const renderKey = (k: (typeof params.keys)[number]): string => {
     const id = escapeHtml(k.id);
-    const actions = k.revoked_at
+    const isSession = k.key_type === "session";
+    const rotate = isSession
       ? ""
-      : `<details><summary>Manage</summary>
+      : `<form method="post" action="/app/keys/${id}/rotate" data-confirm="Rotate this key? The current key stops working immediately.">
+              <button type="submit">Rotate</button>
+            </form>`;
+    const actions = `<details><summary>Manage</summary>
             <form method="post" action="/app/keys/${id}/rename">
               <label>New label <input type="text" name="label" value="${escapeHtml(k.label)}" maxlength="64" required /></label>
               <button type="submit">Rename</button>
             </form>
-            <form method="post" action="/app/keys/${id}/rotate" data-confirm="Rotate this key? The current key stops working immediately.">
-              <button type="submit">Rotate</button>
-            </form>
-            <form method="post" action="/app/keys/${id}/revoke" data-confirm="Revoke this key? Agents using it lose access.">
-              <button type="submit">Revoke</button>
+            ${rotate}
+            <form method="post" action="/app/keys/${id}/delete" data-confirm="Delete this key? Agents using it lose access, and its requests leave the Requests list.">
+              <button type="submit">Delete</button>
             </form>
           </details>`;
-    const revokedNote = k.revoked_at
-      ? ` · revoked ${fmtTime(k.revoked_at)}`
-      : "";
+    const kind =
+      isSession && k.expires_at
+        ? `Session key · expires ${fmtExpiresIn(k.expires_at)}`
+        : "Persistent key";
     return `<li><b>${escapeHtml(k.label)}</b>
-        <div class="note">Created ${fmtTime(k.created_at)} · last used ${fmtTime(k.last_used_at)}${revokedNote}</div>
+        <div class="note">${kind}</div>
+        <div class="note">Created ${relativeTimeTag(k.created_at)}${originNote({
+          ip: k.created_ip,
+          location: k.created_location,
+          userAgent: k.created_user_agent,
+        })}</div>
+        <div class="note">Last used ${
+          k.last_used_at ? relativeTimeTag(k.last_used_at) : "never"
+        }${originNote({
+          ip: k.last_used_ip,
+          location: k.last_used_location,
+          userAgent: k.last_used_user_agent,
+        })}</div>
         ${actions}</li>`;
   };
-  const active = params.keys.filter((k) => !k.revoked_at);
-  const revoked = params.keys.filter((k) => k.revoked_at);
-  const revokedSection = revoked.length
-    ? `<details>
-        <summary>Revoked (${revoked.length})</summary>
-        <ul class="list">${revoked.map(renderKey).join("")}</ul>
-      </details>`
-    : "";
 
   const body = `
     <h1>API keys</h1>
@@ -514,13 +548,12 @@ function renderKeysPage(
       <button type="submit">Create API key</button>
     </form>
     <p class="note">Signing in a CLI? It shows a code to enter under <a href="/app/device">Sign in a device</a>.</p>
-    <h2>Active keys</h2>
+    <h2>Keys</h2>
     ${
-      active.length
-        ? `<ul class="list">${active.map(renderKey).join("")}</ul>`
-        : "<p>No active API keys.</p>"
-    }
-    ${revokedSection}`;
+      params.keys.length
+        ? `<ul class="list">${params.keys.map(renderKey).join("")}</ul>`
+        : "<p>No API keys.</p>"
+    }`;
 
   const script = `
     document.querySelectorAll("form[data-confirm]").forEach(function (f) {
@@ -539,7 +572,7 @@ function renderKeysPage(
   return sendPage(c, {
     title: "API keys",
     body,
-    script,
+    script: `${script}${RELATIVE_TIME_SCRIPT}`,
     nav: "/app/keys",
     status: params.error ? 400 : 200,
   });
@@ -568,7 +601,12 @@ appRouter.post("/keys", requireSessionPage, async (c) => {
     });
   }
   try {
-    const created = await createApiKey({ userId, sessionId, label });
+    const created = await createApiKey({
+      userId,
+      sessionId,
+      label,
+      origin: requestOrigin(c),
+    });
     return renderKeysPage(c, {
       keys: await listApiKeys(userId),
       created: { label, keyPlain: created.keyPlain },
@@ -591,10 +629,15 @@ appRouter.post("/keys/:id/:action", requireSessionPage, async (c) => {
       const label = await formLabel(c);
       if (!label) throw new ApiKeyError("Enter a label (up to 64 characters).");
       await renameApiKey({ userId, sessionId, apiKeyId, label });
-    } else if (action === "revoke") {
-      await revokeApiKey({ userId, sessionId, apiKeyId });
+    } else if (action === "delete") {
+      await deleteApiKey({ userId, sessionId, apiKeyId });
     } else if (action === "rotate") {
-      const created = await rotateApiKey({ userId, sessionId, apiKeyId });
+      const created = await rotateApiKey({
+        userId,
+        sessionId,
+        apiKeyId,
+        origin: requestOrigin(c),
+      });
       return renderKeysPage(c, {
         keys: await listApiKeys(userId),
         created: { label: created.label, keyPlain: created.keyPlain },
@@ -646,9 +689,13 @@ function renderDevicePage(
 
   const code = escapeHtml(pending.user_code);
   const label = params.label ?? pending.label_hint ?? pending.client_id;
+  const kind =
+    pending.key_type === "session"
+      ? `a <b>session key</b> that expires ${SESSION_KEY_TTL_SECONDS / 3600} hours after it's issued`
+      : "a new API key that works until you delete it";
   const body = `
     <h1>Sign in a device</h1>
-    <p>Approving creates a new API key and hands it to the device showing this code:</p>
+    <p>Approving creates ${kind} and hands it to the device showing this code:</p>
     <pre>${code}</pre>
     <p class="note">Requested by <code>${escapeHtml(pending.client_id)}</code> ${relativeTimeTag(pending.created_at)}. Only approve if you started this sign-in yourself and the code matches what it shows.</p>
     ${error}
@@ -684,7 +731,13 @@ appRouter.get("/device", requireSessionPage, async (c) => {
       error: "That code is invalid, expired, or already used.",
     });
   }
-  return renderDevicePage(c, { pending });
+  // Agents sign in repeatedly with the same suggested label; offer a free one.
+  const { userId } = c.get("webSession");
+  const label = await suggestFreeLabel({
+    userId,
+    label: pending.label_hint ?? pending.client_id,
+  });
+  return renderDevicePage(c, { pending, label });
 });
 
 appRouter.post("/device/:action", requireSessionPage, async (c) => {

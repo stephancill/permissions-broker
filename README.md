@@ -20,7 +20,7 @@ Passkey-controlled permissions gate + proxy API for third-party providers, with 
 
 - Skill definition (for agent integrations): `skills/stupid-vault/SKILL.md`
 
-Agents sign in with `python3 skills/stupid-vault/scripts/vault_auth.py login` (OAuth 2.0 device flow; the user approves a code in the app) and the key is stored in `~/.config/stupid-vault/credentials.json`. See `docs/DEVICE_AUTHORIZATION.md`.
+Agents sign in with `python3 skills/stupid-vault/scripts/vault_auth.py login` (OAuth 2.0 device flow; the user approves a code in the app) and get a session key that expires after 6 hours, stored in `~/.config/stupid-vault/credentials.json` (`--persistent` for a long-lived key). See `docs/DEVICE_AUTHORIZATION.md`.
 
 When self-hosting, sign in with `vault_auth.py login --base-url <your broker>`; the scripts use the broker URL stored with the credential.
 
@@ -108,7 +108,7 @@ Everything the user does happens in the stupid vault PWA at `/app` (installable;
 
 - **Sign in** with the passkey (usernameless). The first visit on an empty broker offers **Create account**, which creates the passkey that encrypts linked accounts.
 - **Requests**: pending requests (tap to review) and recent decisions. Approve with the passkey or Deny.
-- **API keys**: create (shown once), rename, rotate, revoke. CLIs can instead get a key through device sign-in (`/device`: enter or confirm the code the CLI shows, then approve).
+- **API keys**: create (shown once), rename, rotate, delete (the label can be reused right away; deleting also removes the key's requests from the list, the audit log keeps them). Each key shows where it was issued to and last used from (IP, edge geolocation, user agent). CLIs can instead get a key through device sign-in (`/device`: enter or confirm the code the CLI shows, then approve); agents get 6-hour **session keys** this way.
 - **Accounts**: connect/disconnect Google, GitHub, Spotify and Cloudflare (OAuth) and IMAP email (read-only form).
 - **Settings**: enable notifications on this device, list/remove devices, send a test push, replace the passkey, sign out.
 

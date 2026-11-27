@@ -1,3 +1,4 @@
+import { sweepExpiredApiKeys } from "../auth/apiKeyAdmin";
 import { sweepDeviceAuthorizations } from "../auth/device";
 import { sweepWebSessions } from "../auth/session";
 import { sweepCredentialGrants } from "../credentials/store";
@@ -28,6 +29,7 @@ export async function sweepExpiredState(): Promise<void> {
   await sweepReleaseState();
   await sweepWebSessions();
   await sweepDeviceAuthorizations();
+  await sweepExpiredApiKeys();
   // After session sweeps so keys of just-expired targets are wiped too.
   await sweepCredentialGrants();
 }

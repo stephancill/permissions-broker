@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { ulid } from "ulid";
 
 import { createApp } from "../src/app";
+import { sweepExpiredApiKeys } from "../src/auth/apiKeyAdmin";
 import { normalizeUserCode } from "../src/auth/device";
 import { randomBase64Url } from "../src/crypto/random";
 import { sha256Hex } from "../src/crypto/sha256";
@@ -61,10 +62,13 @@ async function authorize(body: Record<string, string> = {}) {
   };
 }
 
-async function poll(deviceCode: string) {
+async function poll(deviceCode: string, headers: Record<string, string> = {}) {
   const res = await app.request(`${ORIGIN}/v1/device/token`, {
     method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
+    headers: {
+      "content-type": "application/x-www-form-urlencoded",
+      ...headers,
+    },
     body: new URLSearchParams({
       grant_type: GRANT,
       device_code: deviceCode,
@@ -233,4 +237,96 @@ test("token endpoint rejects other grant types", async () => {
   });
   expect(res.status).toBe(400);
   expect(((await res.json()) as JsonBody).error).toBe("unsupported_grant_type");
+});
+
+test("session keys expire after 6 hours and are swept", async () => {
+  const { userId, cookie } = await signedInUser();
+  const auth = await authorize({ label: "claude", key_type: "session" });
+
+  const page = await app.request(
+    `${ORIGIN}/app/device?user_code=${auth.user_code}`,
+    { headers: { cookie } }
+  );
+  expect(await page.text()).toContain(
+    "<b>session key</b> that expires 6 hours"
+  );
+
+  await pagePost({
+    path: "/app/device/approve",
+    cookie,
+    form: { user_code: auth.user_code, label: "claude" },
+  });
+  const before = Date.now();
+  const done = await poll(auth.device_code, {
+    "cf-connecting-ip": "203.0.113.9",
+    "cf-ipcountry": "ZA",
+    "user-agent": "stupid-vault-cli/1.0",
+  });
+  expect(done.status).toBe(200);
+  expect(done.json.key_type).toBe("session");
+  const expiresAt = Date.parse(done.json.expires_at);
+  expect(expiresAt - before).toBeGreaterThan(6 * 3600_000 - 5_000);
+  expect(expiresAt - before).toBeLessThanOrEqual(6 * 3600_000 + 5_000);
+  expect(Number(done.json.expires_in)).toBeGreaterThan(6 * 3600 - 5);
+
+  const token = done.json.access_token;
+  const who = await app.request(`${ORIGIN}/v1/whoami`, {
+    headers: {
+      authorization: `Bearer ${token}`,
+      "cf-connecting-ip": "198.51.100.4",
+      "user-agent": "curl/8.4",
+    },
+  });
+  const whoJson = (await who.json()) as JsonBody;
+  expect(whoJson.key_type).toBe("session");
+  expect(whoJson.expires_at).toBe(done.json.expires_at);
+
+  // The keys page shows the session key and its audit trail.
+  const keys = await (
+    await app.request(`${ORIGIN}/app/keys`, { headers: { cookie } })
+  ).text();
+  expect(keys).toMatch(/Session key · expires in (5 h 59|6 h 0) min/);
+  expect(keys).toContain("from ZA (203.0.113.9)");
+  expect(keys).toContain("stupid-vault-cli/1.0");
+  expect(keys).toContain("from 198.51.100.4");
+  expect(keys).toContain("curl/8.4");
+  expect(keys).not.toContain("/rotate");
+
+  // The next sign-in with the same suggested label gets a free one.
+  const next = await authorize({ label: "claude", key_type: "session" });
+  const nextPage = await app.request(
+    `${ORIGIN}/app/device?user_code=${next.user_code}`,
+    { headers: { cookie } }
+  );
+  expect(await nextPage.text()).toContain('value="claude 2"');
+
+  // Past expiry the key stops working, and the sweeper deletes it.
+  const database = await db();
+  await database
+    .query("UPDATE api_keys SET expires_at = ? WHERE key_hash = ?;")
+    .run(new Date(Date.now() - 1000).toISOString(), await sha256Hex(token));
+  const expired = await app.request(`${ORIGIN}/v1/whoami`, {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  expect(expired.status).toBe(401);
+  expect(((await expired.json()) as JsonBody).error).toBe("api_key_expired");
+
+  await sweepExpiredApiKeys();
+  const left = await database
+    .query("SELECT label FROM api_keys WHERE user_id = ?;")
+    .all<{ label: string }>(userId);
+  expect(left).toEqual([]);
+});
+
+test("device keys default to persistent", async () => {
+  const { cookie } = await signedInUser();
+  const auth = await authorize({ label: "server" });
+  await pagePost({
+    path: "/app/device/approve",
+    cookie,
+    form: { user_code: auth.user_code, label: "server" },
+  });
+  const done = await poll(auth.device_code);
+  expect(done.json.key_type).toBe("persistent");
+  expect(done.json.expires_at).toBeUndefined();
 });
