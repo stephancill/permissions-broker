@@ -26,7 +26,7 @@ When self-hosting, sign in with `vault_auth.py login --base-url <your broker>`; 
 
 ## Claude / ChatGPT connector
 
-The broker is also a remote MCP server: add `<APP_BASE_URL>/mcp` as a custom connector in Claude or ChatGPT (developer mode). The client signs in with OAuth (the user approves it in the app and it receives an API key), then gets tools to list linked accounts and make approval-gated requests. See `docs/MCP_CONNECTOR.md`.
+The broker is also a remote MCP server: add `<APP_BASE_URL>/mcp` as a custom connector in Claude or ChatGPT (developer mode). The client signs in with OAuth (the user approves it in the app and it receives an API key), then gets the same tools as the agent skill: approval-gated API requests, read-only email and git clone/push sessions. See `docs/MCP_CONNECTOR.md`.
 
 ## Self-hosting
 

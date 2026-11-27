@@ -28,6 +28,9 @@ asks the user to sign in again).
 
 ## Tools
 
+The connector covers the same surfaces as the agent skill: proxy requests,
+read-only email and git sessions.
+
 | Tool | Annotations | What it does |
 | --- | --- | --- |
 | `whoami` | read-only | The connector's key id and label |
@@ -35,21 +38,38 @@ asks the user to sign in again).
 | `proxy_get` | read-only, open world | Approval-gated GET through `/v1/proxy` |
 | `proxy_request` | destructive, open world | Approval-gated request with any allowed method and a body |
 | `proxy_result` | idempotent, open world | Keep waiting on an earlier request and return its response |
+| `email_start_session` | read-only, open world | Approval-gated read-only IMAP session (`/v1/email/sessions`) |
+| `email_session_status` | read-only | Keep waiting on an email session |
+| `email_list_folders`, `email_search`, `email_read` | read-only, open world | The session's read operations |
+| `git_read_session` | read-only, open world | Approval-gated clone/fetch/pull session (`/v1/git/sessions`), returns the remote URL |
+| `git_push_session` | destructive, open world | Approval-gated push session, returns the remote URL |
+| `git_session_remote` | read-only, idempotent | Keep waiting on a git session and return its remote URL |
 
-The tools call the `/v1/proxy` and `/v1/accounts` handlers in-process with the
-connector's own key (and the caller's IP), so approvals, approval windows, push
-notifications, size limits and single-use execute are exactly those of the HTTP
-API. `proxy_get`/`proxy_request` create the request and wait up to
-`wait_seconds` (default 45, max 50; Claude allows 240s per tool call) for the
-user's decision, then execute and return `HTTP <status> (<content-type>)` and
-the body. Text bodies over 100,000 characters are truncated (Claude caps tool
-results at about 150k); binary bodies are omitted. If the user hasn't decided
-yet the tool returns `PENDING_APPROVAL` with the `request_id`, and the model
-calls `proxy_result`. Denied, expired and broker errors come back as tool
-results with `isError: true`.
+The tools call the `/v1` handlers in-process with the connector's own key (and
+the caller's IP), so approvals, approval windows, push notifications, size
+limits, single-use execute and key scoping are exactly those of the HTTP API.
+Every tool that needs an approval waits up to `wait_seconds` (default 45,
+max 50; Claude allows 240s per tool call). If the user hasn't decided yet it
+returns `PENDING_APPROVAL` with the id, and the model calls the follow-up tool
+(`proxy_result`, `email_session_status` or `git_session_remote`; the email
+operations also wait on a pending session themselves). Denied, expired and
+broker errors come back as tool results with `isError: true`.
 
-Git and email sessions aren't exposed: they need a local git client or are a
-better fit for a dedicated tool set.
+Proxy responses come back as `HTTP <status> (<content-type>), <n> bytes` and
+the body. Text over 100,000 characters is truncated (Claude caps tool results
+at about 150k). Binary bodies up to 75,000 bytes come back as an `image`
+content block (PNG, JPEG, GIF, WebP) or an embedded `resource` blob
+(`vault://proxy/<request_id>`); larger ones are omitted. `idempotency_key` is
+passed through so retries reuse the request and its approval.
+
+Email results are the `/v1/email` JSON, truncated the same way. Git tools
+return the remote URL plus usage for the client's own git CLI, so they only
+help clients that can run git (Claude Code, Codex). The URL embeds the
+session secret; the tool tells the model to use it directly and not store it,
+and it expires with the session. Push sessions keep their server-side guards
+(no tags, no deletes, default branch only if allowed at approval).
+
+Apple release sessions stay CI-only (GitHub OIDC, not API keys).
 
 ## Protocol
 

@@ -36,11 +36,15 @@ const LATEST_PROTOCOL_VERSION = SUPPORTED_PROTOCOL_VERSIONS[0];
 // DNS rebinding). Hosted connectors call it server-side.
 const ALLOWED_BROWSER_ORIGINS = ["https://claude.ai", "https://chatgpt.com"];
 
-const SERVER_INSTRUCTIONS = `stupid vault is the user's credential broker. It holds their linked accounts (Google, GitHub, Spotify, Cloudflare) and lets you call those APIs without ever seeing a credential.
+const SERVER_INSTRUCTIONS = `stupid vault is the user's credential broker. It holds their linked accounts (Google, GitHub, Spotify, Cloudflare, IMAP email) and lets you use them without ever seeing a credential.
 
-Every proxied request needs the user's approval: they get a push notification on their phone, review the exact request and confirm with their passkey. proxy_get and proxy_request wait for that decision; if they return PENDING_APPROVAL, tell the user what is waiting for approval and call proxy_result with the request_id. A response is returned only once, so keep what you need.
+Everything needs the user's approval: they get a push notification on their phone, review what you asked for and confirm with their passkey. Tools wait for that decision; if one returns PENDING_APPROVAL, tell the user what is waiting and call the matching follow-up tool (proxy_result, email_session_status, git_session_remote) with the id it returned.
 
-Use list_accounts to see what is linked. Propose the exact request you will make, keep requests narrow (fields, page sizes), and add a short consent_hint so the user knows why you are asking. Linking accounts happens in the stupid vault app (Accounts), not through these tools.`;
+- APIs: proxy_get (reads) and proxy_request (writes) make one upstream request each; a response is returned only once, so keep what you need.
+- Email (read-only): email_start_session, then email_list_folders, email_search and email_read with its session_id. One approval covers the session.
+- Git (needs a shell with git): git_read_session (clone/fetch/pull) or git_push_session returns a short-lived remote URL for your git CLI.
+
+Use list_accounts to see what is linked. Propose exactly what you will do, keep requests narrow, and add a short consent_hint so the user knows why you are asking. Linking accounts happens in the stupid vault app (Accounts), not through these tools.`;
 
 function noStore(c: Context): void {
   c.header("Cache-Control", "no-store");

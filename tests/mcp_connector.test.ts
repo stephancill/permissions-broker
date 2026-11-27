@@ -15,13 +15,16 @@ await migrate();
 configureEnv({ ...env, APP_BASE_URL: ORIGIN, APP_SECRET: "test-app-secret" });
 
 const app = createApp();
+const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
 const upstream = Bun.serve({
   port: 0,
-  fetch: () =>
-    new Response(JSON.stringify({ login: "octocat" }), {
-      headers: { "content-type": "application/json" },
-    }),
+  fetch: (req) =>
+    new URL(req.url).pathname === "/image"
+      ? new Response(PNG, { headers: { "content-type": "image/png" } })
+      : new Response(JSON.stringify({ login: "octocat" }), {
+          headers: { "content-type": "application/json" },
+        }),
 });
 afterAll(() => upstream.stop(true));
 
@@ -170,6 +173,37 @@ async function rpc(
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
   });
   return { res, json: (await res.json()) as Json };
+}
+
+type Content = {
+  type: string;
+  text?: string;
+  data?: string;
+  mimeType?: string;
+};
+
+function toolContent(json: Json): Content[] {
+  return (json.result as { content: Content[] }).content;
+}
+
+// Creates a proxy request through the tool, then simulates its approval
+// (test mode executes against the local stub upstream).
+async function approvedProxyRequest(
+  accessToken: string,
+  path: string
+): Promise<string> {
+  const pending = await rpc(accessToken, "tools/call", {
+    name: "proxy_get",
+    arguments: { url: "https://api.github.com/user", wait_seconds: 0 },
+  });
+  const requestId = JSON.parse(toolText(pending.json).text).request_id;
+  const database = await db();
+  await database
+    .query(
+      "UPDATE proxy_requests SET status = 'APPROVED', upstream_url = ? WHERE id = ?;"
+    )
+    .run(`http://localhost:${upstream.port}${path}`, requestId);
+  return requestId;
 }
 
 function toolText(json: Json): { text: string; isError: boolean } {
@@ -407,6 +441,14 @@ test("MCP initialize, tools/list and whoami", async () => {
     "proxy_get",
     "proxy_request",
     "proxy_result",
+    "email_start_session",
+    "email_session_status",
+    "email_list_folders",
+    "email_search",
+    "email_read",
+    "git_read_session",
+    "git_push_session",
+    "git_session_remote",
   ]);
   for (const t of tools) {
     expect((t.inputSchema as Json).type).toBe("object");
@@ -527,4 +569,112 @@ test("revoked connector keys get a 401 challenge", async () => {
   expect(res.headers.get("www-authenticate")).toContain(
     'error="invalid_token"'
   );
+});
+
+test("binary proxy responses come back as content blocks", async () => {
+  const { accessToken } = await connect();
+  const requestId = await approvedProxyRequest(accessToken, "/image");
+  const done = await rpc(accessToken, "tools/call", {
+    name: "proxy_result",
+    arguments: { request_id: requestId, wait_seconds: 0 },
+  });
+  const content = toolContent(done.json);
+  expect(content[0]?.text).toStartWith("HTTP 200 (image/png), 8 bytes");
+  expect(content[1]).toEqual({
+    type: "image",
+    data: Buffer.from(PNG).toString("base64"),
+    mimeType: "image/png",
+  });
+});
+
+test("email tools open a session and wait for its approval", async () => {
+  const { accessToken, userId } = await connect();
+
+  const none = await rpc(accessToken, "tools/call", {
+    name: "email_start_session",
+    arguments: { wait_seconds: 0 },
+  });
+  expect(toolText(none.json)).toMatchObject({ isError: true });
+  expect(toolText(none.json).text).toContain("no_linked_imap");
+
+  const database = await db();
+  await database
+    .query(
+      "INSERT INTO linked_accounts (id, user_id, provider, provider_user_id, scopes, refresh_token_ciphertext, status, created_at, revoked_at) VALUES (?, ?, 'imap', ?, 'read', 'x', 'active', ?, NULL);"
+    )
+    .run(ulid(), userId, ulid(), new Date().toISOString());
+
+  const started = await rpc(accessToken, "tools/call", {
+    name: "email_start_session",
+    arguments: { consent_hint: "find the invoice", wait_seconds: 0 },
+  });
+  const pending = JSON.parse(toolText(started.json).text) as Json;
+  expect(pending.status).toBe("PENDING_APPROVAL");
+  const sessionId = pending.session_id as string;
+
+  const folders = await rpc(accessToken, "tools/call", {
+    name: "email_list_folders",
+    arguments: { session_id: sessionId, wait_seconds: 0 },
+  });
+  expect(JSON.parse(toolText(folders.json).text).status).toBe(
+    "PENDING_APPROVAL"
+  );
+
+  await database
+    .query("UPDATE email_sessions SET status = 'DENIED' WHERE id = ?;")
+    .run(sessionId);
+  const denied = await rpc(accessToken, "tools/call", {
+    name: "email_session_status",
+    arguments: { session_id: sessionId, wait_seconds: 0 },
+  });
+  expect(toolText(denied.json).isError).toBe(true);
+  expect(toolText(denied.json).text).toContain("denied email access");
+
+  const search = await rpc(accessToken, "tools/call", {
+    name: "email_search",
+    arguments: { session_id: sessionId, mailbox: "INBOX", wait_seconds: 0 },
+  });
+  expect(toolText(search.json).isError).toBe(true);
+});
+
+test("git tools return a remote URL once the session is approved", async () => {
+  const { accessToken } = await connect();
+
+  const push = await rpc(accessToken, "tools/call", {
+    name: "git_push_session",
+    arguments: { repo: "octo/repo", wait_seconds: 0 },
+  });
+  expect(toolText(push.json).isError).toBe(true);
+  expect(toolText(push.json).text).toContain("no_linked_github");
+
+  const bad = await rpc(accessToken, "tools/call", {
+    name: "git_read_session",
+    arguments: { repo: "not a repo", wait_seconds: 0 },
+  });
+  expect(toolText(bad.json).isError).toBe(true);
+
+  const started = await rpc(accessToken, "tools/call", {
+    name: "git_read_session",
+    arguments: { repo: "octo/repo.git", wait_seconds: 0 },
+  });
+  const pending = JSON.parse(toolText(started.json).text) as Json;
+  expect(pending.status).toBe("PENDING_APPROVAL");
+  const sessionId = pending.session_id as string;
+
+  const database = await db();
+  await database
+    .query("UPDATE git_sessions SET status = 'APPROVED' WHERE id = ?;")
+    .run(sessionId);
+  const ready = await rpc(accessToken, "tools/call", {
+    name: "git_session_remote",
+    arguments: { session_id: sessionId, wait_seconds: 0 },
+  });
+  const out = JSON.parse(toolText(ready.json).text) as Json;
+  expect(out.operation).toBe("clone");
+  expect(out.repo).toBe("octo/repo");
+  expect(out.remote_url as string).toStartWith(
+    `${ORIGIN}/v1/git/session/${sessionId}/`
+  );
+  expect(out.remote_url as string).toEndWith("/github/octo/repo.git");
+  expect(out.usage as string).toContain("git clone");
 });
