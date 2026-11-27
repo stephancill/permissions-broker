@@ -13,6 +13,10 @@ The scripts read their credential (broker URL + API key) from
 `~/.config/stupid-vault/credentials.json` (`$XDG_CONFIG_HOME/stupid-vault/`
 if set). Pass `--credentials <path>` to any script to use a different file.
 
+The scripts need network access to the broker. If requests to it are blocked
+(e.g. a sandbox with a host allowlist), tell the user the broker's host must be
+allowed in that environment's network settings.
+
 1. Check whether you're signed in:
 
    ```bash

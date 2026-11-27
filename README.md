@@ -20,7 +20,9 @@ Passkey-controlled permissions gate + proxy API for third-party providers, with 
 
 - Skill definition (for agent integrations): `skills/stupid-vault/SKILL.md`
 
-Agents sign in with `python3 skills/stupid-vault/scripts/vault_auth.py login` (OAuth 2.0 device flow; the user approves a code in the app) and get a session key that expires after 6 hours, stored in `~/.config/stupid-vault/credentials.json` (`--persistent` for a long-lived key). See `docs/DEVICE_AUTHORIZATION.md`.
+Agents sign in with `python3 skills/stupid-vault/scripts/vault_auth.py login` (OAuth 2.0 device flow; the user approves a code in the app) and get a session key that expires after 6 hours, stored in `~/.config/stupid-vault/credentials.json` (`--persistent` for a long-lived key).
+
+The skill needs a shell that can reach the broker (e.g. Claude Code). In claude.ai, Claude's code sandbox blocks most outside hosts by default; it only works there if the broker's host is allowed in the code-execution network settings. See `docs/DEVICE_AUTHORIZATION.md`.
 
 When self-hosting, sign in with `vault_auth.py login --base-url <your broker>`; the scripts use the broker URL stored with the credential.
 
